@@ -1,0 +1,15 @@
+{
+  "name": "24-arena",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "npm --prefix shared run build && npm --prefix client run build && npm --prefix server run build",
+    "start": "npm --prefix server run start",
+    "test": "npm --prefix shared run test"
+  }
+}

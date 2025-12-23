@@ -1,0 +1,17 @@
+node_modules
+.DS_Store
+config.json
+.arena-port
+24-arena-data
+.npm-cache
+.node-gyp
+.npmrc
+.usb-home
+**/dist
+**/.vite
+**/coverage
+**/*.sqlite
+assets-src/build
+assets-src/*.log
+assets-src/mptextmp.mp
+assets-src/mptextmp.mpx

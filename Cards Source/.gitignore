@@ -1,0 +1,10 @@
+*.mps
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.synctex.gz
+*.mp
+*.mpx
+mpa*.tex
+.vscode

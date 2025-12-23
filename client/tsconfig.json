@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@arena/shared": ["../shared/src/index.ts"],
+      "@arena/shared/*": ["../shared/src/*"]
+    }
+  },
+  "include": ["src"]
+}

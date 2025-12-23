@@ -1,0 +1,25 @@
+\documentclass[a4paper]{article}
+
+\usepackage{graphicx}
+\usepackage{forloop}
+\usepackage[margin=0cm,tmargin=4cm]{geometry}
+
+\pagenumbering{gobble}
+
+\begin{document}
+
+\newcounter{n}
+\setcounter{n}{1}
+\whiledo{\value{n} < 91}{%
+	\begin{center}%
+		{\noindent\includegraphics*[width=10cm]{card\arabic{n}.mps}}%
+		\stepcounter{n}%
+		{\includegraphics*[width=10cm]{card\arabic{n}.mps}}%
+	\end{center}%
+	\stepcounter{n}%
+}
+\begin{center}
+	{\noindent\includegraphics*[width=10cm]{card91.mps}}
+\end{center}
+
+\end{document}

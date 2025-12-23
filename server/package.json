@@ -1,0 +1,27 @@
+{
+  "name": "@arena/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@arena/shared": "file:../shared",
+    "@fastify/cors": "^8.3.0",
+    "@fastify/static": "^6.12.0",
+    "archiver": "^6.0.1",
+    "better-sqlite3": "^9.4.0",
+    "fastify": "^4.26.0"
+  },
+  "devDependencies": {
+    "@types/archiver": "^6.0.3",
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/node": "^20.11.30",
+    "tsx": "^4.7.1",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
