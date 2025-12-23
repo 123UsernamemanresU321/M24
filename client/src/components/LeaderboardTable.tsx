@@ -1,7 +1,13 @@
 import React from 'react';
 import type { LeaderboardRow } from '@arena/shared';
 
-export default function LeaderboardTable({ rows }: { rows: LeaderboardRow[] }) {
+export default function LeaderboardTable({
+  rows,
+  onKick
+}: {
+  rows: LeaderboardRow[];
+  onKick?: (playerId: string) => void;
+}) {
   return (
     <table className="table">
       <thead>
@@ -11,6 +17,7 @@ export default function LeaderboardTable({ rows }: { rows: LeaderboardRow[] }) {
           <th>Score</th>
           <th>Correct</th>
           <th>Wrong</th>
+          {onKick && <th>Actions</th>}
         </tr>
       </thead>
       <tbody>
@@ -21,6 +28,13 @@ export default function LeaderboardTable({ rows }: { rows: LeaderboardRow[] }) {
             <td>{row.score_total}</td>
             <td>{row.correct_count}</td>
             <td>{row.wrong_count}</td>
+            {onKick && (
+              <td>
+                <button className="button ghost small" onClick={() => onKick(row.player_id)}>
+                  Kick
+                </button>
+              </td>
+            )}
           </tr>
         ))}
       </tbody>

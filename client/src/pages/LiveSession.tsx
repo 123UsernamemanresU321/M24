@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { computeTimerState } from '@arena/shared';
-import type { Card, LeaderboardRow, Round, Session } from '@arena/shared';
+import type { Card, LeaderboardRow, Round, Session, SessionRules } from '@arena/shared';
 import {
   approvePendingAttempt,
   boot,
   endSession,
   getActiveRound,
+  getNetworkInfo,
   getPendingAttempts,
   getSession,
+  kickPlayer,
   rejectPendingAttempt,
   skipRound,
   submitAttempt
@@ -18,6 +20,7 @@ import CardView from '../components/CardView';
 import LeaderboardTable from '../components/LeaderboardTable';
 import Modal from '../components/Modal';
 import PlayerSelect from '../components/PlayerSelect';
+import QrCode from '../components/QrCode';
 import { parseRulesJson } from '../utils/rules';
 
 const errorMessages: Record<string, string> = {
@@ -36,7 +39,11 @@ const errorMessages: Record<string, string> = {
   VALUE_OVERFLOW: 'Expression values grew too large.',
   PLAYER_LOCKED_OUT: 'Player is locked out.',
   ROUND_COLD_START: 'Submissions are not open yet.',
-  ROUND_TIMER_EXPIRED: 'Time is up for this round.'
+  ROUND_TIMER_EXPIRED: 'Time is up for this round.',
+  CLAIM_REQUIRED: 'Claim required before submitting.',
+  CLAIM_ACTIVE: 'Another player is answering.',
+  CLAIM_EXPIRED: 'Claim window expired.',
+  EXPRESSION_TOO_LONG: 'Expression is too long.'
 };
 
 const skipErrorMessages: Record<string, string> = {
@@ -44,6 +51,14 @@ const skipErrorMessages: Record<string, string> = {
   SKIP_LIMIT_REACHED: 'No skips remaining.',
   NO_ACTIVE_ROUND: 'No active round to skip.',
   SKIP_PLAYER_REQUIRED: 'Select a player for the skip penalty.'
+};
+
+type ClaimState = {
+  active: boolean;
+  player_id: string | null;
+  player_name?: string | null;
+  started_at?: string | null;
+  expires_at?: string | null;
 };
 
 function formatTimer(seconds?: number): string {
@@ -66,6 +81,9 @@ function formatResultMessage(errorCode: string, remainingSeconds?: number): stri
   if (errorCode === 'ROUND_COLD_START') {
     return `${base} Opens in ${remainingSeconds}s.`;
   }
+  if (errorCode === 'CLAIM_ACTIVE') {
+    return `${base} (${remainingSeconds ?? 0}s left).`;
+  }
   return `${base} (${remainingSeconds}s)`;
 }
 
@@ -79,6 +97,9 @@ export default function LiveSession() {
   const [activeRules, setActiveRules] = useState<ActiveRules | null>(null);
   const [timeout, setTimeout] = useState<{ expired: boolean; solution?: string | null; remainingSeconds?: number | null } | null>(null);
   const [skipInfo, setSkipInfo] = useState<SkipInfo | null>(null);
+  const [claim, setClaim] = useState<ClaimState | null>(null);
+  const [multiplayerInfo, setMultiplayerInfo] = useState<SessionRules['multiplayer'] | null>(null);
+  const [previewPlayerId, setPreviewPlayerId] = useState('');
   const [playerId, setPlayerId] = useState('');
   const [expression, setExpression] = useState('');
   const [inputLocked, setInputLocked] = useState(false);
@@ -88,6 +109,7 @@ export default function LiveSession() {
   const [skipReason, setSkipReason] = useState('');
   const [skipPenaltyPlayerId, setSkipPenaltyPlayerId] = useState('');
   const [skipError, setSkipError] = useState('');
+  const [copyNotice, setCopyNotice] = useState('');
   const [pendingAttempts, setPendingAttempts] = useState<Array<{
     id: string;
     player_name: string;
@@ -95,11 +117,12 @@ export default function LiveSession() {
     is_correct: number;
     error_code: string;
   }>>([]);
-  const [lanUrls, setLanUrls] = useState<string[]>([]);
+  const [networkInfo, setNetworkInfo] = useState<{ hostname: string; lanIPv4: string | null; port?: number } | null>(null);
   const [error, setError] = useState('');
   const [tick, setTick] = useState(0);
 
   const rules = useMemo(() => parseRulesJson(session?.rules_json), [session]);
+  const perPlayerMode = Boolean(rules.multiplayer?.enabled && rules.multiplayer.cardDistribution === 'perPlayer');
 
   useEffect(() => {
     if (!id) {
@@ -108,7 +131,17 @@ export default function LiveSession() {
     getSession(id)
       .then(setSession)
       .catch((err) => setError(err.message));
-    getActiveRound(id)
+    boot()
+      .then(() => getNetworkInfo().then(setNetworkInfo).catch(() => null))
+      .catch(() => null);
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) {
+      return;
+    }
+    const ownerId = perPlayerMode ? previewPlayerId || undefined : undefined;
+    getActiveRound(id, ownerId)
       .then((data) => {
         setRound(data.round);
         setCard(data.card);
@@ -120,21 +153,29 @@ export default function LiveSession() {
           skipsRemaining: data.skipsRemaining ?? null,
           skipPenaltySummary: data.skipPenaltySummary ?? null
         });
-        if (data.leaderboard.length > 0) {
+        setClaim(data.claim ?? null);
+        setMultiplayerInfo(data.multiplayer ?? null);
+        if (data.leaderboard.length > 0 && !playerId) {
           setPlayerId(data.leaderboard[0].player_id);
         }
       })
       .catch((err) => setError(err.message));
+  }, [id, perPlayerMode, previewPlayerId]);
 
-    boot().then((data) => setLanUrls(data.lanUrls ?? [])).catch(() => null);
-  }, [id]);
+  useEffect(() => {
+    if (!perPlayerMode || previewPlayerId || leaderboard.length === 0) {
+      return;
+    }
+    setPreviewPlayerId(leaderboard[0].player_id);
+  }, [perPlayerMode, previewPlayerId, leaderboard]);
 
   useEffect(() => {
     if (!id) {
       return;
     }
     const refresh = () => {
-      getActiveRound(id)
+      const ownerId = perPlayerMode ? previewPlayerId || undefined : undefined;
+      getActiveRound(id, ownerId)
         .then((data) => {
           setRound(data.round);
           setCard(data.card);
@@ -146,12 +187,14 @@ export default function LiveSession() {
             skipsRemaining: data.skipsRemaining ?? null,
             skipPenaltySummary: data.skipPenaltySummary ?? null
           });
+          setClaim(data.claim ?? null);
+          setMultiplayerInfo(data.multiplayer ?? null);
         })
         .catch(() => null);
     };
     const interval = setInterval(refresh, 4000);
     return () => clearInterval(interval);
-  }, [id]);
+  }, [id, perPlayerMode, previewPlayerId]);
 
   useEffect(() => {
     const interval = setInterval(() => setTick((prev) => prev + 1), 1000);
@@ -206,6 +249,8 @@ export default function LiveSession() {
         skipsRemaining: response.skipsRemaining ?? null,
         skipPenaltySummary: response.skipPenaltySummary ?? null
       });
+      setClaim(response.claim ?? null);
+      setMultiplayerInfo(response.multiplayer ?? null);
       const message = formatResultMessage(response.result.error_code, response.result.remainingSeconds);
       setResult({ correct: response.result.correct, message, points: response.result.points });
       if (rules.no_undo_input) {
@@ -229,6 +274,21 @@ export default function LiveSession() {
     }
     await endSession(id);
     navigate(`/sessions/${id}/summary`);
+  };
+
+  const handleKick = async (kickPlayerId: string) => {
+    if (!id) {
+      return;
+    }
+    const confirmKick = window.confirm('Remove this player from the session?');
+    if (!confirmKick) {
+      return;
+    }
+    try {
+      await kickPlayer(id, kickPlayerId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Kick failed');
+    }
   };
 
   const handleApprove = async (attemptId: string) => {
@@ -268,7 +328,8 @@ export default function LiveSession() {
     try {
       const response = await skipRound(id, {
         reason: skipReason.trim() || undefined,
-        selected_player_id: penaltyMode === 'selectedPlayer' ? skipPenaltyPlayerId : undefined
+        selected_player_id: penaltyMode === 'selectedPlayer' ? skipPenaltyPlayerId : undefined,
+        owner_player_id: perPlayerMode ? previewPlayerId || undefined : undefined
       });
       if (!response.ok) {
         const message = response.error_code ? skipErrorMessages[response.error_code] ?? 'Skip failed.' : 'Skip failed.';
@@ -286,6 +347,8 @@ export default function LiveSession() {
           skipsRemaining: response.skipsRemaining ?? null,
           skipPenaltySummary: response.skipPenaltySummary ?? null
         });
+        setClaim(response.claim ?? null);
+        setMultiplayerInfo(response.multiplayer ?? null);
       }
       setSkipModalOpen(false);
       setSkipReason('');
@@ -384,6 +447,33 @@ export default function LiveSession() {
     return available;
   }, [round, card, rules.hints_enabled, tick]);
 
+  const joinCode = session?.join_code ?? '';
+  const hostnameCandidate = networkInfo?.hostname ? `${networkInfo.hostname}.local` : null;
+  const joinPort = networkInfo?.port;
+  const primaryJoinUrl = joinCode && joinPort && hostnameCandidate
+    ? `http://${hostnameCandidate}:${joinPort}/join?code=${joinCode}`
+    : null;
+  const fallbackJoinUrl = joinCode && joinPort && networkInfo?.lanIPv4
+    ? `http://${networkInfo.lanIPv4}:${joinPort}/join?code=${joinCode}`
+    : null;
+  const claimRemaining = claim?.expires_at
+    ? Math.max(0, Math.ceil((new Date(claim.expires_at).getTime() - Date.now()) / 1000))
+    : null;
+  const claimActive = Boolean(claim?.active);
+  const multiplayerEnabled = Boolean(multiplayerInfo?.enabled);
+  const hostSubmissionDisabled = multiplayerEnabled && Boolean(multiplayerInfo?.claimEnabled);
+
+  const handleCopy = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyNotice('Copied join link.');
+      window.setTimeout(() => setCopyNotice(''), 2000);
+    } catch {
+      setCopyNotice('Copy failed.');
+      window.setTimeout(() => setCopyNotice(''), 2000);
+    }
+  };
+
   return (
     <div className="container">
       <div className="grid" style={{ gap: '24px' }}>
@@ -392,12 +482,6 @@ export default function LiveSession() {
             <div>
               <div className="section-title">Live Session</div>
               <div style={{ fontSize: '20px', fontWeight: 700 }}>{session?.title ?? 'Loading...'}</div>
-              {session?.join_code && rules.lan_enabled && (
-                <div className="helper">Join code: <strong>{session.join_code}</strong></div>
-              )}
-              {rules.lan_enabled && lanUrls.length > 0 && (
-                <div className="helper">LAN URL: {lanUrls[0]}</div>
-              )}
             </div>
             <div className="session-actions">
               <Link className="button ghost" to={`/projector/${id ?? ''}`} target="_blank" rel="noreferrer">
@@ -418,6 +502,16 @@ export default function LiveSession() {
             )}
             {rules.hints_enabled && <span className="chip">Hints enabled</span>}
             {rules.lan_enabled && <span className="chip">LAN mode</span>}
+            {multiplayerEnabled && (
+              <span className="chip">
+                Multiplayer: {multiplayerInfo?.cardDistribution === 'perPlayer' ? 'per-player' : 'shared'}
+              </span>
+            )}
+            {claimActive && (
+              <span className="chip warning">
+                Claim: {claim?.player_name ?? 'Player'} {claimRemaining !== null ? `(${claimRemaining}s)` : ''}
+              </span>
+            )}
             {bannedOpsLabel && <span className="chip warning">Restricted: {bannedOpsLabel}</span>}
             {shapeLabel && <span className="chip">Shape: {shapeLabel}</span>}
             {coldStartRemaining !== null && <span className="chip">Submissions open in {coldStartRemaining}s</span>}
@@ -426,8 +520,61 @@ export default function LiveSession() {
           </div>
         </div>
 
+        {(multiplayerEnabled || rules.lan_enabled) && joinCode && (
+          <div className="panel lan-panel">
+            <div className="section-title">Host LAN Game</div>
+            <div className="lan-grid">
+              <div className="lan-code">
+                <div className="helper">Join code</div>
+                <div className="join-code">{joinCode}</div>
+              </div>
+              <div className="lan-links">
+                {primaryJoinUrl && (
+                  <div className="lan-link-row">
+                    <div className="helper">Preferred link (.local)</div>
+                    <div className="lan-link">{primaryJoinUrl}</div>
+                    <button className="button ghost small" onClick={() => handleCopy(primaryJoinUrl)}>
+                      Copy
+                    </button>
+                  </div>
+                )}
+                {fallbackJoinUrl && (
+                  <div className="lan-link-row">
+                    <div className="helper">Fallback link (IP)</div>
+                    <div className="lan-link">{fallbackJoinUrl}</div>
+                    <button className="button ghost small" onClick={() => handleCopy(fallbackJoinUrl)}>
+                      Copy
+                    </button>
+                  </div>
+                )}
+                {copyNotice && <div className="helper">{copyNotice}</div>}
+              </div>
+              <div className="lan-qr">
+                {primaryJoinUrl && (
+                  <div className="qr-block">
+                    <QrCode value={primaryJoinUrl} size={140} label="Join via hostname" />
+                    <div className="helper">Primary QR</div>
+                  </div>
+                )}
+                {fallbackJoinUrl && (
+                  <div className="qr-block">
+                    <QrCode value={fallbackJoinUrl} size={140} label="Join via IP" />
+                    <div className="helper">Fallback QR</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {card && (
           <div className="panel">
+            {perPlayerMode && (
+              <div className="form inline">
+                <label>Preview player</label>
+                <PlayerSelect players={leaderboard} value={previewPlayerId} onChange={setPreviewPlayerId} />
+              </div>
+            )}
             <CardView numbers={displayNumbers} tier={card.dot_tier} />
             {hints.length > 0 && (
               <div className="hint-list">
@@ -443,10 +590,15 @@ export default function LiveSession() {
 
         <div className="panel">
           <div className="section-title">Check Answer</div>
+          {hostSubmissionDisabled && (
+            <div className="banner subtle">
+              LAN multiplayer is active. Players submit from their own devices.
+            </div>
+          )}
           <div className="form">
             <div>
               <label>Player</label>
-              <PlayerSelect players={leaderboard} value={playerId} onChange={setPlayerId} />
+              <PlayerSelect players={leaderboard} value={playerId} onChange={setPlayerId} disabled={hostSubmissionDisabled} />
             </div>
             <div>
               <label>Expression</label>
@@ -455,13 +607,21 @@ export default function LiveSession() {
                 onChange={(event) => setExpression(event.target.value)}
                 placeholder="(6/(1-3/4)) or concat(1,2)*2"
                 readOnly={rules.no_undo_input && inputLocked}
+                disabled={hostSubmissionDisabled}
               />
             </div>
             <div className="button-row">
               <button
                 className="button"
                 onClick={handleSubmit}
-                disabled={!expression || !playerId || (rules.no_undo_input && inputLocked) || coldStartRemaining !== null || timeout?.expired}
+                disabled={
+                  hostSubmissionDisabled ||
+                  !expression ||
+                  !playerId ||
+                  (rules.no_undo_input && inputLocked) ||
+                  coldStartRemaining !== null ||
+                  timeout?.expired
+                }
               >
                 Check Answer
               </button>
@@ -474,7 +634,7 @@ export default function LiveSession() {
                 <button
                   className="button ghost"
                   onClick={() => setSkipModalOpen(true)}
-                  disabled={skipsRemaining === 0}
+                  disabled={skipsRemaining === 0 || (perPlayerMode && !previewPlayerId)}
                 >
                   Skip
                 </button>
@@ -536,7 +696,7 @@ export default function LiveSession() {
 
         <div className="panel">
           <div className="section-title">Leaderboard</div>
-          <LeaderboardTable rows={leaderboard} />
+          <LeaderboardTable rows={leaderboard} onKick={multiplayerEnabled ? handleKick : undefined} />
         </div>
       </div>
       <Modal open={skipModalOpen} title="Skip this card?" onClose={() => setSkipModalOpen(false)}>

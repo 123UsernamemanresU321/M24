@@ -6,15 +6,20 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
+import http from 'http';
+import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import archiver from 'archiver';
 import { ensureConfig, ensureDataDirs, getConfigPath } from './config.js';
 import { initSchema, nowIso, openDatabase } from './db.js';
 import { applyMigrations } from './migrations.js';
 import { cardSignature, generateCard } from './cardGenerator.js';
 import { performSkip } from './skip.js';
+import { canStartClaim, getClaimRemainingSeconds } from './claimUtils.js';
+import { createRateLimiter } from './rateLimit.js';
+import { selectRoundForOwner } from './roundOwner.js';
 import { computeColdStartRemaining, computeTimerState, shouldRevealHint } from '@arena/shared';
-import { astSignature, defaultOps, findSolutionExpressionWithOps, findUnsolvableNumbers, normalizeName, planPlayerImport, solveCard, verifyExpression, type Card, type LeaderboardRow, type OpsConfig, type Player, type PlayerInput, type Round, type Session, type SessionRules } from '@arena/shared';
+import { astSignature, computeClaimPenalty, defaultOps, findSolutionExpressionWithOps, findUnsolvableNumbers, normalizeName, planPlayerImport, solveCard, verifyExpression, type Card, type LeaderboardRow, type OpsConfig, type Player, type PlayerInput, type Round, type Session, type SessionRules } from '@arena/shared';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..', '..');
@@ -25,6 +30,8 @@ const defaultScoring: Record<'1' | '2' | '3' | '4', number> = {
   '3': 4,
   '4': 7
 };
+
+const MAX_EXPRESSION_LENGTH = 300;
 
 const defaultRules: SessionRules = {
   target: 24,
@@ -52,6 +59,14 @@ const defaultRules: SessionRules = {
     limit: 3,
     penaltyMode: 'none',
     penaltyPoints: 0
+  },
+  multiplayer: {
+    enabled: false,
+    cardDistribution: 'shared',
+    claimEnabled: true,
+    claimWindowSeconds: 10,
+    wrongLockoutSeconds: 10,
+    claimPenalty: { mode: 'leaderboardScaled', base: 0, max: 2 }
   }
 };
 
@@ -104,6 +119,20 @@ function normalizeRules(input: SessionRules | null | undefined): SessionRules {
         penaltyPoints: Math.max(0, Math.floor(rules.skip.penaltyPoints ?? defaultRules.skip?.penaltyPoints ?? 0))
       }
     : { ...(defaultRules.skip ?? { enabled: false, limit: 3, penaltyMode: 'none', penaltyPoints: 0 }) };
+  const multiplayer: SessionRules['multiplayer'] = rules.multiplayer
+    ? {
+        enabled: rules.multiplayer.enabled ?? defaultRules.multiplayer?.enabled ?? false,
+        cardDistribution: rules.multiplayer.cardDistribution ?? defaultRules.multiplayer?.cardDistribution ?? 'shared',
+        claimEnabled: rules.multiplayer.claimEnabled ?? defaultRules.multiplayer?.claimEnabled ?? true,
+        claimWindowSeconds: Math.max(5, Math.floor(rules.multiplayer.claimWindowSeconds ?? defaultRules.multiplayer?.claimWindowSeconds ?? 10)),
+        wrongLockoutSeconds: Math.max(5, Math.floor(rules.multiplayer.wrongLockoutSeconds ?? defaultRules.multiplayer?.wrongLockoutSeconds ?? 10)),
+        claimPenalty: {
+          mode: 'leaderboardScaled' as const,
+          base: Math.max(0, Math.floor(rules.multiplayer.claimPenalty?.base ?? defaultRules.multiplayer?.claimPenalty?.base ?? 0)),
+          max: Math.max(0, Math.floor(rules.multiplayer.claimPenalty?.max ?? defaultRules.multiplayer?.claimPenalty?.max ?? 2))
+        }
+      }
+    : { ...(defaultRules.multiplayer ?? { enabled: false, cardDistribution: 'shared', claimEnabled: true, claimWindowSeconds: 10, wrongLockoutSeconds: 10, claimPenalty: { mode: 'leaderboardScaled', base: 0, max: 2 } }) };
   if (!ops.add || !ops.sub || !ops.mul || !ops.div) {
     console.warn('Base operations must remain enabled; restoring + - * /.');
   }
@@ -131,7 +160,8 @@ function normalizeRules(input: SessionRules | null | undefined): SessionRules {
     coldStartSeconds: rules.coldStartSeconds ?? defaultRules.coldStartSeconds,
     blindReveal,
     uniquenessBonusPoints: rules.uniquenessBonusPoints ?? defaultRules.uniquenessBonusPoints,
-    skip
+    skip,
+    multiplayer
   };
 }
 
@@ -158,13 +188,61 @@ function safeCsv(value: string): string {
   return value;
 }
 
-function generateJoinCode(length = 5): string {
+function generateJoinCode(length = 4): string {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < length; i += 1) {
     code += alphabet[Math.floor(Math.random() * alphabet.length)];
   }
   return code;
+}
+
+function generateToken(bytes = 16): string {
+  return randomBytes(bytes).toString('hex');
+}
+
+function normalizeIp(address?: string | null): string {
+  if (!address) {
+    return '';
+  }
+  if (address.startsWith('::ffff:')) {
+    return address.slice(7);
+  }
+  return address;
+}
+
+function isLoopback(address?: string | null): boolean {
+  const ip = normalizeIp(address);
+  return ip === '127.0.0.1' || ip === '::1';
+}
+
+function isPrivateIpv4(address?: string | null): boolean {
+  const ip = normalizeIp(address);
+  const parts = ip.split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((value) => Number.isNaN(value))) {
+    return false;
+  }
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 169 && b === 254) return true;
+  return false;
+}
+
+function getLanIPv4(): string | null {
+  const interfaces = os.networkInterfaces();
+  for (const entries of Object.values(interfaces)) {
+    if (!entries) {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.family === 'IPv4' && !entry.internal && isPrivateIpv4(entry.address)) {
+        return entry.address;
+      }
+    }
+  }
+  return null;
 }
 
 function getLanUrls(port: number): string[] {
@@ -183,6 +261,23 @@ function getLanUrls(port: number): string[] {
   return urls;
 }
 
+function ensureHostToken(dataDir: string): string {
+  const tokenPath = path.join(dataDir, 'host-token.json');
+  if (fs.existsSync(tokenPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(tokenPath, 'utf-8')) as { token?: string };
+      if (raw.token && typeof raw.token === 'string') {
+        return raw.token;
+      }
+    } catch {
+      // fall through
+    }
+  }
+  const token = generateToken();
+  fs.writeFileSync(tokenPath, JSON.stringify({ token, created_at: nowIso() }, null, 2));
+  return token;
+}
+
 function writeExportFile(dataDir: string, prefix: string, content: string, ext = 'csv'): { filename: string; path: string } {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `${prefix}-${timestamp}.${ext}`;
@@ -194,11 +289,25 @@ function writeExportFile(dataDir: string, prefix: string, content: string, ext =
 async function start() {
   const { config, dataDir } = await ensureConfig(projectRoot);
   ensureDataDirs(dataDir);
+  const hostToken = ensureHostToken(dataDir);
+  let serverPort: number | undefined;
 
   const db = openDatabase(dataDir);
   initSchema(db);
   applyMigrations(db);
   db.prepare('DELETE FROM session_prank_state').run();
+
+  const ensureSessionTokens = db.prepare('SELECT id FROM sessions WHERE session_token IS NULL');
+  const updateSessionToken = db.prepare('UPDATE sessions SET session_token = ? WHERE id = ?');
+  const missingTokens = ensureSessionTokens.all() as Array<{ id: string }>;
+  if (missingTokens.length > 0) {
+    const tx = db.transaction(() => {
+      for (const row of missingTokens) {
+        updateSessionToken.run(generateToken(), row.id);
+      }
+    });
+    tx();
+  }
 
   let difficultyThresholds = config.difficultyThresholds ?? { t1: 0.25, t2: 0.45, t3: 0.65 };
 
@@ -208,6 +317,7 @@ async function start() {
        VALUES (@id, @display_name, @display_name_normalized, @age, @ib_grade, @notes, @created_at)`
     ),
     listPlayers: db.prepare('SELECT * FROM players ORDER BY created_at DESC'),
+    getPlayerById: db.prepare('SELECT * FROM players WHERE id = ?'),
     getPlayerByNormalized: db.prepare('SELECT * FROM players WHERE display_name_normalized = ? LIMIT 1'),
     updatePlayer: db.prepare(
       `UPDATE players
@@ -220,13 +330,14 @@ async function start() {
     ),
     deletePlayer: db.prepare('DELETE FROM players WHERE id = ?'),
     insertSession: db.prepare(
-      `INSERT INTO sessions (id, title, status, rules_json, join_code, created_at)
-       VALUES (@id, @title, @status, @rules_json, @join_code, @created_at)`
+      `INSERT INTO sessions (id, title, status, rules_json, join_code, session_token, created_at)
+       VALUES (@id, @title, @status, @rules_json, @join_code, @session_token, @created_at)`
     ),
     listSessions: db.prepare('SELECT * FROM sessions ORDER BY created_at DESC LIMIT 20'),
     getSession: db.prepare('SELECT * FROM sessions WHERE id = ?'),
     getSessionByJoinCode: db.prepare('SELECT * FROM sessions WHERE join_code = ?'),
     updateSessionJoinCode: db.prepare('UPDATE sessions SET join_code = ? WHERE id = ?'),
+    updateSessionToken: db.prepare('UPDATE sessions SET session_token = ? WHERE id = ?'),
     updateSessionStatus: db.prepare('UPDATE sessions SET status = ? WHERE id = ?'),
     listPlayerIds: db.prepare('SELECT id FROM players'),
     insertSessionPlayer: db.prepare(
@@ -234,6 +345,7 @@ async function start() {
        (session_id, player_id, score_total, correct_count, wrong_count, created_at)
        VALUES (@session_id, @player_id, 0, 0, 0, @created_at)`
     ),
+    deleteSessionPlayer: db.prepare('DELETE FROM session_players WHERE session_id = ? AND player_id = ?'),
     sessionPlayerExists: db.prepare(
       'SELECT 1 FROM session_players WHERE session_id = ? AND player_id = ? LIMIT 1'
     ),
@@ -250,6 +362,11 @@ async function start() {
        ORDER BY created_at DESC
        LIMIT 1`
     ),
+    listActiveRounds: db.prepare(
+      `SELECT * FROM rounds
+       WHERE session_id = ? AND status = 'active'
+       ORDER BY created_at DESC`
+    ),
     insertCard: db.prepare(
       `INSERT INTO cards
        (id, n1, n2, n3, n4, target, difficulty_score, dot_tier, solution_count, attempts_count, solves_count, avg_attempts_to_solve, avg_time_to_solve, tags_json, hint_ops_json, hint_intermediates_json, created_at)
@@ -257,6 +374,7 @@ async function start() {
     ),
     getCard: db.prepare('SELECT * FROM cards WHERE id = ?'),
     updateCardTier: db.prepare('UPDATE cards SET dot_tier = ? WHERE id = ?'),
+    getRoundById: db.prepare('SELECT * FROM rounds WHERE id = ?'),
     insertRound: db.prepare(
       `INSERT INTO rounds
        (id, session_id, card_id, status, solved_by_player_id, solved_at, metadata_json, created_at)
@@ -343,6 +461,25 @@ async function start() {
     updateSessionPlayerScore: db.prepare(
       `UPDATE session_players SET score_total = ? WHERE session_id = ? AND player_id = ?`
     ),
+    insertSessionClient: db.prepare(
+      `INSERT INTO session_clients
+       (client_token, session_id, player_id, created_at, last_seen, ip, user_agent)
+       VALUES (@client_token, @session_id, @player_id, @created_at, @last_seen, @ip, @user_agent)`
+    ),
+    getSessionClient: db.prepare(
+      `SELECT * FROM session_clients WHERE client_token = ?`
+    ),
+    listSessionClients: db.prepare(
+      `SELECT sc.client_token, sc.player_id, sc.created_at, sc.last_seen, sc.ip, sc.user_agent, p.display_name
+       FROM session_clients sc
+       JOIN players p ON sc.player_id = p.id
+       WHERE sc.session_id = ?`
+    ),
+    updateSessionClientSeen: db.prepare(
+      'UPDATE session_clients SET last_seen = ?, ip = COALESCE(?, ip), user_agent = COALESCE(?, user_agent) WHERE client_token = ?'
+    ),
+    deleteSessionClient: db.prepare('DELETE FROM session_clients WHERE client_token = ?'),
+    deleteSessionClientsForPlayer: db.prepare('DELETE FROM session_clients WHERE session_id = ? AND player_id = ?'),
     insertSolutionSignature: db.prepare(
       `INSERT OR IGNORE INTO session_solution_signatures (session_id, signature, created_at)
        VALUES (?, ?, ?)`
@@ -514,9 +651,61 @@ async function start() {
     hint: { op?: string; intermediate?: number } | null;
   }>();
 
+  const rateLimit = createRateLimiter();
+
   const rng = () => Math.random();
+  type WsClient = {
+    socket: WebSocket;
+    sessionId: string;
+    playerId: string | null;
+    isHost: boolean;
+  };
+  const wsClients = new Map<string, Set<WsClient>>();
   const prankSessions = new Map<string, boolean>();
   const prankCache = new Map<string, Array<[number, number, number, number]>>();
+
+  const getClientToken = (request: { headers: Record<string, string | string[] | undefined>; body?: unknown }) => {
+    const rawHeader = request.headers['x-client-token'];
+    if (typeof rawHeader === 'string' && rawHeader.trim()) {
+      return rawHeader.trim();
+    }
+    if (Array.isArray(rawHeader) && rawHeader.length > 0) {
+      return rawHeader[0];
+    }
+    const auth = request.headers.authorization;
+    if (typeof auth === 'string' && auth.startsWith('Bearer ')) {
+      return auth.slice(7).trim();
+    }
+    if (request.body && typeof request.body === 'object' && request.body !== null) {
+      const bodyToken = (request.body as { client_token?: string }).client_token;
+      if (typeof bodyToken === 'string' && bodyToken.trim()) {
+        return bodyToken.trim();
+      }
+    }
+    return null;
+  };
+
+  const hasHostToken = (request: { headers: Record<string, string | string[] | undefined> }) => {
+    const token = request.headers['x-host-token'];
+    return token === hostToken;
+  };
+
+  const getSessionClientForToken = (
+    sessionId: string,
+    token: string,
+    request: { ip?: string; headers: Record<string, string | string[] | undefined> }
+  ) => {
+    const sessionClient = statements.getSessionClient.get(token) as
+      | { session_id: string; player_id: string }
+      | undefined;
+    if (!sessionClient || sessionClient.session_id !== sessionId) {
+      return null;
+    }
+    const ip = normalizeIp(request.ip);
+    const userAgent = typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null;
+    statements.updateSessionClientSeen.run(nowIso(), ip || null, userAgent || null, token);
+    return sessionClient;
+  };
 
   type RestrictedOp = 'add' | 'sub' | 'mul' | 'div';
   type RoundMetadata = {
@@ -527,6 +716,12 @@ async function start() {
     isImpossible?: boolean;
     timerExpiredAt?: string;
     timeoutSolution?: string | null;
+    ownerPlayerId?: string | null;
+    claim?: {
+      playerId: string;
+      startedAt: string;
+      expiresAt: string;
+    };
   };
   type RevealState = {
     enabled: boolean;
@@ -546,6 +741,21 @@ async function start() {
       points: number;
     } | null;
     timeout?: { expired: boolean; solution?: string | null; remainingSeconds?: number | null } | null;
+    claim?: {
+      active: boolean;
+      player_id: string | null;
+      player_name?: string | null;
+      started_at?: string | null;
+      expires_at?: string | null;
+    } | null;
+    multiplayer?: {
+      enabled: boolean;
+      cardDistribution: 'shared' | 'perPlayer';
+      claimEnabled: boolean;
+      claimWindowSeconds: number;
+      wrongLockoutSeconds: number;
+      claimPenalty: { mode: 'leaderboardScaled'; base: number; max: number };
+    };
     timer: ReturnType<typeof computeTimerState>;
     hints: {
       enabled: boolean;
@@ -569,7 +779,7 @@ async function start() {
 
   const parseRoundMetadataJson = (metadataJson: string | null | undefined): RoundMetadata => {
     if (!metadataJson) {
-      return { isImpossible: false };
+      return { isImpossible: false, ownerPlayerId: null };
     }
     try {
       const parsed = JSON.parse(metadataJson) as RoundMetadata;
@@ -578,9 +788,18 @@ async function start() {
       } else {
         parsed.isImpossible = Boolean(parsed.isImpossible);
       }
+      if (parsed.ownerPlayerId === undefined) {
+        parsed.ownerPlayerId = null;
+      }
+      if (parsed.claim) {
+        const { playerId, startedAt, expiresAt } = parsed.claim;
+        if (!playerId || !startedAt || !expiresAt) {
+          delete parsed.claim;
+        }
+      }
       return parsed;
     } catch {
-      return { isImpossible: false };
+      return { isImpossible: false, ownerPlayerId: null };
     }
   };
 
@@ -588,18 +807,21 @@ async function start() {
 
   const normalizeRoundMetadataForStorage = (metadataJson: string | null | undefined) => {
     if (!metadataJson) {
-      return { metadata: { isImpossible: false } as RoundMetadata, needsUpdate: true };
+      return { metadata: { isImpossible: false, ownerPlayerId: null } as RoundMetadata, needsUpdate: true };
     }
     try {
       const parsed = JSON.parse(metadataJson) as RoundMetadata;
       const hasFlag = Object.prototype.hasOwnProperty.call(parsed, 'isImpossible');
+      const hasOwner = Object.prototype.hasOwnProperty.call(parsed, 'ownerPlayerId');
       if (!hasFlag) {
         parsed.isImpossible = Boolean(parsed.prank);
-        return { metadata: parsed, needsUpdate: true };
       }
-      return { metadata: parsed, needsUpdate: false };
+      if (!hasOwner) {
+        parsed.ownerPlayerId = null;
+      }
+      return { metadata: parsed, needsUpdate: !hasFlag || !hasOwner };
     } catch {
-      return { metadata: { isImpossible: false } as RoundMetadata, needsUpdate: true };
+      return { metadata: { isImpossible: false, ownerPlayerId: null } as RoundMetadata, needsUpdate: true };
     }
   };
 
@@ -674,6 +896,161 @@ async function start() {
       skipsRemaining,
       skipPenaltySummary: { mode, points }
     };
+  };
+
+  const getMultiplayerConfig = (rules: SessionRules) => {
+    const config = rules.multiplayer ?? defaultRules.multiplayer ?? {
+      enabled: false,
+      cardDistribution: 'shared',
+      claimEnabled: true,
+      claimWindowSeconds: 10,
+      wrongLockoutSeconds: 10,
+      claimPenalty: { mode: 'leaderboardScaled', base: 0, max: 2 }
+    };
+    return {
+      enabled: Boolean(config.enabled),
+      cardDistribution: config.cardDistribution ?? 'shared',
+      claimEnabled: config.claimEnabled ?? true,
+      claimWindowSeconds: Math.max(5, Math.floor(config.claimWindowSeconds ?? 10)),
+      wrongLockoutSeconds: Math.max(5, Math.floor(config.wrongLockoutSeconds ?? 10)),
+      claimPenalty: {
+        mode: 'leaderboardScaled' as const,
+        base: Math.max(0, Math.floor(config.claimPenalty?.base ?? 0)),
+        max: Math.max(0, Math.floor(config.claimPenalty?.max ?? 2))
+      }
+    };
+  };
+
+  const claimTimers = new Map<string, NodeJS.Timeout>();
+
+  const clearClaimTimer = (roundId: string) => {
+    const timer = claimTimers.get(roundId);
+    if (timer) {
+      clearTimeout(timer);
+      claimTimers.delete(roundId);
+    }
+  };
+
+  const applyPlayerLockout = (sessionId: string, playerId: string, seconds: number) => {
+    if (seconds <= 0) {
+      return;
+    }
+    const existing = statements.getPlayerLockout.get(sessionId, playerId) as { locked_until: string } | undefined;
+    const now = Date.now();
+    const nextUntil = new Date(now + seconds * 1000).toISOString();
+    if (existing) {
+      const existingUntil = new Date(existing.locked_until).getTime();
+      if (existingUntil > now) {
+        const maxUntil = new Date(Math.max(existingUntil, new Date(nextUntil).getTime())).toISOString();
+        statements.setPlayerLockout.run(sessionId, playerId, maxUntil);
+        return;
+      }
+    }
+    statements.setPlayerLockout.run(sessionId, playerId, nextUntil);
+  };
+
+  const expireClaimIfNeeded = (sessionId: string, round: Round, rules: SessionRules, metadata: RoundMetadata) => {
+    if (!metadata.claim) {
+      return false;
+    }
+    const expiresAt = new Date(metadata.claim.expiresAt).getTime();
+    if (Number.isNaN(expiresAt) || Date.now() <= expiresAt) {
+      return false;
+    }
+    const multiplayer = getMultiplayerConfig(rules);
+    const leaderboard = statements.leaderboard.all(sessionId) as LeaderboardRow[];
+    const rank = leaderboard.findIndex((row) => row.player_id === metadata.claim?.playerId);
+    if (rank >= 0) {
+      const penalty = computeClaimPenalty({
+        rank: rank + 1,
+        totalPlayers: leaderboard.length,
+        base: multiplayer.claimPenalty.base,
+        max: multiplayer.claimPenalty.max
+      });
+      if (penalty > 0) {
+        const row = statements.getSessionPlayerScore.get(sessionId, metadata.claim.playerId) as { score_total: number } | undefined;
+        if (row) {
+          const allowNegative = Boolean(rules.mistakePenalty?.allowNegative);
+          const nextScore = allowNegative ? row.score_total - penalty : Math.max(0, row.score_total - penalty);
+          statements.updateSessionPlayerScore.run(nextScore, sessionId, metadata.claim.playerId);
+        }
+      }
+    }
+    applyPlayerLockout(sessionId, metadata.claim.playerId, multiplayer.wrongLockoutSeconds);
+    metadata.claim = undefined;
+    const nextJson = JSON.stringify(metadata);
+    round.metadata_json = nextJson;
+    statements.updateRoundMetadata.run(nextJson, round.id);
+    clearClaimTimer(round.id);
+    return true;
+  };
+
+  const scheduleClaimTimeout = (sessionId: string, roundId: string, expiresAt: string) => {
+    clearClaimTimer(roundId);
+    const delayMs = Math.max(0, new Date(expiresAt).getTime() - Date.now());
+    const timer = setTimeout(() => {
+      const round = statements.getRoundById.get(roundId) as Round | undefined;
+      if (!round || round.status !== 'active') {
+        clearClaimTimer(roundId);
+        return;
+      }
+      const metadata = parseRoundMetadata(round);
+      const session = statements.getSession.get(sessionId) as Session | undefined;
+      if (!session) {
+        clearClaimTimer(roundId);
+        return;
+      }
+      const rules = parseRules(session.rules_json);
+      const changed = expireClaimIfNeeded(sessionId, round, rules, metadata);
+      if (changed) {
+        broadcastSessionState(sessionId);
+      }
+    }, delayMs + 50);
+    claimTimers.set(roundId, timer);
+  };
+
+  const findActiveRoundForOwner = (sessionId: string, ownerPlayerId: string | null) => {
+    const rounds = statements.listActiveRounds.all(sessionId) as Round[];
+    const round = selectRoundForOwner(rounds, ownerPlayerId);
+    if (!round) {
+      return null;
+    }
+    return { round, metadata: parseRoundMetadata(round) };
+  };
+
+  const ensureActiveRoundForPlayer = (session: Session, rules: SessionRules, playerId: string | null) => {
+    const multiplayer = getMultiplayerConfig(rules);
+    const ownerId = multiplayer.enabled && multiplayer.cardDistribution === 'perPlayer' ? playerId : null;
+    if (ownerId === null) {
+      const existing = findActiveRoundForOwner(session.id, null);
+      if (existing) {
+        return existing;
+      }
+      const anyActive = statements.listActiveRounds.all(session.id) as Round[];
+      if (anyActive.length > 0) {
+        return { round: anyActive[0], metadata: parseRoundMetadata(anyActive[0]) };
+      }
+      if (session.status !== 'live') {
+        return null;
+      }
+      const created = createRoundForSession(session.id, rules, {
+        prankMode: prankSessions.get(session.id) === true,
+        ownerPlayerId: null
+      });
+      return { round: created.round, metadata: parseRoundMetadata(created.round) };
+    }
+    const existing = findActiveRoundForOwner(session.id, ownerId);
+    if (existing) {
+      return existing;
+    }
+    if (session.status !== 'live') {
+      return null;
+    }
+    const created = createRoundForSession(session.id, rules, {
+      prankMode: prankSessions.get(session.id) === true,
+      ownerPlayerId: ownerId
+    });
+    return { round: created.round, metadata: parseRoundMetadata(created.round) };
   };
 
   const hasValidSolutionForConstraints = (
@@ -757,14 +1134,22 @@ async function start() {
     }
   };
 
-  const buildActiveRoundResponse = (sessionId: string): ActiveRoundResponse | null => {
+  const buildActiveRoundResponse = (sessionId: string, ownerPlayerId: string | null = null): ActiveRoundResponse | null => {
     const session = statements.getSession.get(sessionId) as Session | undefined;
     if (!session) {
       return null;
     }
-    const round = statements.getActiveRound.get(sessionId) as Round | undefined;
-    if (!round) {
+    const rules = parseRules(session.rules_json);
+    const multiplayer = getMultiplayerConfig(rules);
+    const active = ensureActiveRoundForPlayer(session, rules, multiplayer.cardDistribution === 'perPlayer' ? ownerPlayerId : null);
+    if (!active) {
       return null;
+    }
+    const round = active.round;
+    let metadata = active.metadata;
+    const changed = expireClaimIfNeeded(session.id, round, rules, metadata);
+    if (changed) {
+      metadata = parseRoundMetadata(round);
     }
     const card = statements.getCard.get(round.card_id) as Card | undefined;
     if (!card) {
@@ -775,11 +1160,9 @@ async function start() {
       statements.updateCardTier.run(normalizedTier, card.id);
       card.dot_tier = normalizedTier;
     }
-    const rules = parseRules(session.rules_json);
     const leaderboard = statements.leaderboard.all(sessionId) as LeaderboardRow[];
     const skipInfo = getSkipInfo(sessionId, rules);
     const timer = computeTimerState(round.created_at, rules.timer_mode ?? 'off', rules.countdown_seconds);
-    const metadata = parseRoundMetadata(round);
     const restrictedOps = metadata.restrictedOps ?? [];
     const allowedOps = buildAllowedOps(rules, restrictedOps);
     const coldStartRemaining = rules.coldStartSeconds
@@ -861,8 +1244,11 @@ async function start() {
       const remaining = Math.max(0, 10 - elapsedExpired);
       if (remaining === 0) {
         statements.markRoundSkipped.run(nowIso(), null, 'timer_expired', round.id);
-        createRoundForSession(session.id, rules, { prankMode: prankSessions.get(session.id) === true });
-        const next = buildActiveRoundResponse(session.id);
+        createRoundForSession(session.id, rules, {
+          prankMode: prankSessions.get(session.id) === true,
+          ownerPlayerId: metadata.ownerPlayerId ?? null
+        });
+        const next = buildActiveRoundResponse(session.id, metadata.ownerPlayerId ?? null);
         if (next) {
           return next;
         }
@@ -874,6 +1260,23 @@ async function start() {
       };
     }
 
+    let claim: ActiveRoundResponse['claim'] = null;
+    if (metadata.claim) {
+      const expiresAtMs = new Date(metadata.claim.expiresAt).getTime();
+      const active = !Number.isNaN(expiresAtMs) && Date.now() < expiresAtMs;
+      const playerRow = statements.getPlayerById.get(metadata.claim.playerId) as Player | undefined;
+      claim = {
+        active,
+        player_id: metadata.claim.playerId,
+        player_name: playerRow?.display_name ?? null,
+        started_at: metadata.claim.startedAt,
+        expires_at: metadata.claim.expiresAt
+      };
+      if (active) {
+        scheduleClaimTimeout(session.id, round.id, metadata.claim.expiresAt);
+      }
+    }
+
     return {
       round: { ...round, hint1_revealed_at: hint1Revealed ?? null, hint2_revealed_at: hint2Revealed ?? null },
       card,
@@ -882,6 +1285,8 @@ async function start() {
       skipsRemaining: skipInfo.skipsRemaining,
       skipPenaltySummary: skipInfo.skipPenaltySummary,
       timeout,
+      claim,
+      multiplayer,
       timer,
       hints: {
         enabled: Boolean(rules.hints_enabled),
@@ -899,7 +1304,11 @@ async function start() {
     };
   };
 
-  const createRoundForSession = (sessionId: string, rules: SessionRules, options?: { prankMode?: boolean }) => {
+  const createRoundForSession = (
+    sessionId: string,
+    rules: SessionRules,
+    options?: { prankMode?: boolean; ownerPlayerId?: string | null }
+  ) => {
     const recentRows = statements.recentCards.all(sessionId, 20) as Array<{
       n1: number;
       n2: number;
@@ -910,7 +1319,10 @@ async function start() {
 
     const restrictedOps = pickRestrictedOps(rules);
     const allowedOps = buildAllowedOps(rules, restrictedOps);
-    const metadata: RoundMetadata = { isImpossible: Boolean(options?.prankMode) };
+    const metadata: RoundMetadata = {
+      isImpossible: Boolean(options?.prankMode),
+      ownerPlayerId: options?.ownerPlayerId ?? null
+    };
     if (restrictedOps.length > 0) {
       metadata.restrictedOps = restrictedOps;
     }
@@ -1046,6 +1458,57 @@ async function start() {
     return { round, card };
   };
 
+  const getLockoutRemaining = (sessionId: string, playerId: string) => {
+    const row = statements.getPlayerLockout.get(sessionId, playerId) as { locked_until: string } | undefined;
+    if (!row) {
+      return 0;
+    }
+    const remaining = Math.max(0, Math.ceil((new Date(row.locked_until).getTime() - Date.now()) / 1000));
+    return remaining;
+  };
+
+  const buildClientState = (sessionId: string, playerId: string | null, isHost: boolean) => {
+    const session = statements.getSession.get(sessionId) as Session | undefined;
+    if (!session) {
+      return null;
+    }
+    const rules = parseRules(session.rules_json);
+    const multiplayer = getMultiplayerConfig(rules);
+    const active = buildActiveRoundResponse(sessionId, multiplayer.cardDistribution === 'perPlayer' ? playerId : null);
+    if (!active) {
+      return null;
+    }
+    const player = playerId ? (statements.getPlayerById.get(playerId) as Player | undefined) : undefined;
+    const lockoutRemaining = playerId ? getLockoutRemaining(sessionId, playerId) : 0;
+    return {
+      session: {
+        ...session,
+        join_code: isHost ? session.join_code : null,
+        session_token: null
+      },
+      player: player ?? null,
+      lockoutRemaining,
+      ...active
+    };
+  };
+
+  function broadcastSessionState(sessionId: string) {
+    const clients = wsClients.get(sessionId);
+    if (!clients || clients.size === 0) {
+      return;
+    }
+    for (const client of clients) {
+      if (client.socket.readyState !== client.socket.OPEN) {
+        continue;
+      }
+      const state = buildClientState(sessionId, client.playerId, client.isHost);
+      if (!state) {
+        continue;
+      }
+      client.socket.send(JSON.stringify({ type: 'state', payload: state }));
+    }
+  }
+
   const handleApprovedSubmission = (args: {
     session: Session;
     active: ActiveRoundResponse;
@@ -1059,6 +1522,73 @@ async function start() {
     const restrictedOps = metadata.restrictedOps ?? [];
     const allowedOps = buildAllowedOps(rules, restrictedOps);
     const cardNumbers = [active.card.n1, active.card.n2, active.card.n3, active.card.n4];
+    const multiplayer = getMultiplayerConfig(rules);
+    const claimRequired = multiplayer.enabled && multiplayer.claimEnabled;
+
+    const clearClaim = () => {
+      if (!metadata.claim) {
+        return;
+      }
+      metadata.claim = undefined;
+      statements.updateRoundMetadata.run(JSON.stringify(metadata), active.round.id);
+      clearClaimTimer(active.round.id);
+    };
+
+    if (claimRequired) {
+      if (!metadata.claim) {
+      return {
+        result: { correct: false, error_code: 'CLAIM_REQUIRED' },
+        round: active.round,
+        card: active.card,
+        leaderboard: statements.leaderboard.all(session.id),
+        skipEnabled: active.skipEnabled,
+        skipsRemaining: active.skipsRemaining,
+        skipPenaltySummary: active.skipPenaltySummary,
+        claim: metadata.claim ? active.claim : null,
+        multiplayer: active.multiplayer,
+        timeout: active.timeout,
+        timer: active.timer,
+        hints: active.hints,
+        activeRules: active.activeRules
+      };
+      }
+      if (metadata.claim.playerId !== playerId) {
+        const remainingSeconds = getClaimRemainingSeconds(metadata.claim);
+      return {
+        result: { correct: false, error_code: 'CLAIM_ACTIVE', remainingSeconds },
+        round: active.round,
+        card: active.card,
+        leaderboard: statements.leaderboard.all(session.id),
+        skipEnabled: active.skipEnabled,
+        skipsRemaining: active.skipsRemaining,
+        skipPenaltySummary: active.skipPenaltySummary,
+        claim: metadata.claim ? active.claim : null,
+        multiplayer: active.multiplayer,
+        timeout: active.timeout,
+        timer: active.timer,
+        hints: active.hints,
+        activeRules: active.activeRules
+      };
+      }
+      if (getClaimRemainingSeconds(metadata.claim) <= 0) {
+        clearClaim();
+      return {
+        result: { correct: false, error_code: 'CLAIM_EXPIRED' },
+        round: active.round,
+        card: active.card,
+        leaderboard: statements.leaderboard.all(session.id),
+        skipEnabled: active.skipEnabled,
+        skipsRemaining: active.skipsRemaining,
+        skipPenaltySummary: active.skipPenaltySummary,
+        claim: metadata.claim ? active.claim : null,
+        multiplayer: active.multiplayer,
+        timeout: active.timeout,
+        timer: active.timer,
+        hints: active.hints,
+        activeRules: active.activeRules
+      };
+      }
+    }
 
     if (active.timeout?.expired) {
       const attemptId = randomUUID();
@@ -1088,6 +1618,8 @@ async function start() {
         skipEnabled: active.skipEnabled,
         skipsRemaining: active.skipsRemaining,
         skipPenaltySummary: active.skipPenaltySummary,
+        claim: metadata.claim ? active.claim : null,
+        multiplayer: active.multiplayer,
         timeout: active.timeout,
         timer: active.timer,
         hints: active.hints,
@@ -1115,19 +1647,21 @@ async function start() {
           approval_status: 'approved',
           created_at: nowIso()
         });
-        return {
-          result: { correct: false, error_code: 'PLAYER_LOCKED_OUT', remainingSeconds },
-          round: active.round,
-          card: active.card,
-          leaderboard: statements.leaderboard.all(session.id),
-          skipEnabled: active.skipEnabled,
-          skipsRemaining: active.skipsRemaining,
-          skipPenaltySummary: active.skipPenaltySummary,
-          timeout: active.timeout,
-          timer: active.timer,
-          hints: active.hints,
-          activeRules: active.activeRules
-        };
+      return {
+        result: { correct: false, error_code: 'PLAYER_LOCKED_OUT', remainingSeconds },
+        round: active.round,
+        card: active.card,
+        leaderboard: statements.leaderboard.all(session.id),
+        skipEnabled: active.skipEnabled,
+        skipsRemaining: active.skipsRemaining,
+        skipPenaltySummary: active.skipPenaltySummary,
+        claim: metadata.claim ? active.claim : null,
+        multiplayer: active.multiplayer,
+        timeout: active.timeout,
+        timer: active.timer,
+        hints: active.hints,
+        activeRules: active.activeRules
+      };
       }
       statements.clearPlayerLockout.run(session.id, playerId);
     }
@@ -1159,6 +1693,8 @@ async function start() {
         skipEnabled: active.skipEnabled,
         skipsRemaining: active.skipsRemaining,
         skipPenaltySummary: active.skipPenaltySummary,
+        claim: metadata.claim ? active.claim : null,
+        multiplayer: active.multiplayer,
         timeout: active.timeout,
         timer: active.timer,
         hints: active.hints,
@@ -1194,6 +1730,10 @@ async function start() {
     if (!verified.ok) {
       statements.incrementWrong.run(session.id, playerId);
       applyMistakePenalty(session.id, playerId, rules);
+      if (claimRequired && metadata.claim?.playerId === playerId) {
+        applyPlayerLockout(session.id, playerId, multiplayer.wrongLockoutSeconds);
+        clearClaim();
+      }
       return {
         result: { correct: false, error_code: verified.errorCode },
         round: active.round,
@@ -1202,6 +1742,8 @@ async function start() {
         skipEnabled: active.skipEnabled,
         skipsRemaining: active.skipsRemaining,
         skipPenaltySummary: active.skipPenaltySummary,
+        claim: metadata.claim ? active.claim : null,
+        multiplayer: active.multiplayer,
         timeout: active.timeout,
         timer: active.timer,
         hints: active.hints,
@@ -1242,9 +1784,15 @@ async function start() {
       });
     });
     transaction();
+    if (claimRequired && metadata.claim?.playerId === playerId) {
+      clearClaim();
+    }
 
-    createRoundForSession(session.id, rules, { prankMode: prankSessions.get(session.id) === true });
-    const next = buildActiveRoundResponse(session.id);
+    createRoundForSession(session.id, rules, {
+      prankMode: prankSessions.get(session.id) === true,
+      ownerPlayerId: metadata.ownerPlayerId ?? null
+    });
+    const next = buildActiveRoundResponse(session.id, metadata.ownerPlayerId ?? null);
     return {
       result: { correct: true, points, error_code: 'OK', bonus_points: bonusPoints || undefined },
       round: next?.round ?? active.round,
@@ -1253,6 +1801,8 @@ async function start() {
       skipEnabled: next?.skipEnabled ?? active.skipEnabled,
       skipsRemaining: next?.skipsRemaining ?? active.skipsRemaining,
       skipPenaltySummary: next?.skipPenaltySummary ?? active.skipPenaltySummary,
+      claim: next?.claim ?? null,
+      multiplayer: next?.multiplayer ?? active.multiplayer,
       timeout: next?.timeout ?? active.timeout,
       timer: next?.timer,
       hints: next?.hints,
@@ -1290,21 +1840,121 @@ async function start() {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   };
 
-  const fastify = Fastify({ logger: false });
-  await fastify.register(cors, { origin: true });
+  const fastify = Fastify({ logger: false, bodyLimit: 16 * 1024 });
+  await fastify.register(cors, {
+    origin: (origin, callback) => {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      try {
+        const url = new URL(origin);
+        const host = url.hostname;
+        if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+          callback(null, true);
+          return;
+        }
+        if (host.endsWith('.local') || isPrivateIpv4(host)) {
+          callback(null, true);
+          return;
+        }
+      } catch {
+        // ignore parse errors
+      }
+      callback(null, false);
+    }
+  });
+
+  const wsServer = new WebSocketServer({ noServer: true });
+  wsServer.on('connection', (socket: WebSocket) => {
+    let client: WsClient | null = null;
+    socket.on('message', (raw: RawData) => {
+      if (client) {
+        return;
+      }
+      try {
+        const message = JSON.parse(raw.toString()) as {
+          type: string;
+          sessionId?: string;
+          clientToken?: string;
+          hostToken?: string;
+          playerId?: string | null;
+          role?: 'host' | 'player';
+        };
+        if (message.type !== 'subscribe' || !message.sessionId) {
+          socket.close();
+          return;
+        }
+        if (message.role === 'host') {
+          if (!message.hostToken || message.hostToken !== hostToken) {
+            socket.close();
+            return;
+          }
+          client = { socket, sessionId: message.sessionId, playerId: null, isHost: true };
+        } else {
+          if (!message.clientToken) {
+            socket.close();
+            return;
+          }
+          const sessionClient = statements.getSessionClient.get(message.clientToken) as
+            | { session_id: string; player_id: string }
+            | undefined;
+          if (!sessionClient || sessionClient.session_id !== message.sessionId) {
+            socket.close();
+            return;
+          }
+          client = { socket, sessionId: message.sessionId, playerId: sessionClient.player_id, isHost: false };
+        }
+        const set = wsClients.get(client.sessionId) ?? new Set<WsClient>();
+        set.add(client);
+        wsClients.set(client.sessionId, set);
+        const state = buildClientState(client.sessionId, client.playerId, client.isHost);
+        if (state) {
+          socket.send(JSON.stringify({ type: 'state', payload: state }));
+        }
+      } catch {
+        socket.close();
+      }
+    });
+    socket.on('close', () => {
+      if (client) {
+        const set = wsClients.get(client.sessionId);
+        if (set) {
+          set.delete(client);
+          if (set.size === 0) {
+            wsClients.delete(client.sessionId);
+          }
+        }
+      }
+    });
+  });
 
   fastify.get('/api/health', async () => ({ ok: true }));
 
-  fastify.post('/api/boot', async () => {
-    const address = fastify.server.address();
-    const port = typeof address === 'object' && address ? address.port : undefined;
+  fastify.post('/api/boot', async (request) => {
+    const port = serverPort;
     return {
       dataDir,
       config,
       serverVersion: '0.2.0',
       port,
-      lanUrls: port ? getLanUrls(port) : []
+      lanUrls: port ? getLanUrls(port) : [],
+      hostToken: isLoopback(request.ip) ? hostToken : undefined
     };
+  });
+
+  fastify.get('/api/network-info', async (request, reply) => {
+    const token = request.headers['x-host-token'];
+    if (token !== hostToken) {
+      reply.status(403).send({ error: 'Host token required.' });
+      return;
+    }
+    const port = serverPort;
+    reply.send({
+      hostname: os.hostname(),
+      lanIPv4: getLanIPv4(),
+      port
+    });
   });
 
   fastify.post<{ Body: { display_name: string; age?: number | null; ib_grade?: string | null; notes?: string | null } }>(
@@ -1800,6 +2450,7 @@ async function start() {
     blindReveal?: SessionRules['blindReveal'];
     uniquenessBonusPoints?: number;
     skip?: SessionRules['skip'];
+    multiplayer?: SessionRules['multiplayer'];
   } }>(
     '/api/sessions',
     async (request, reply) => {
@@ -1825,7 +2476,8 @@ async function start() {
         coldStartSeconds,
         blindReveal,
         uniquenessBonusPoints,
-        skip
+        skip,
+        multiplayer
       } = request.body;
       if (!title || title.trim() === '') {
         reply.status(400).send({ error: 'Title is required.' });
@@ -1856,7 +2508,8 @@ async function start() {
         coldStartSeconds,
         blindReveal,
         uniquenessBonusPoints,
-        skip
+        skip,
+        multiplayer
       });
       const join_code = generateJoinCode();
       const session = {
@@ -1865,6 +2518,7 @@ async function start() {
         status: 'setup',
         rules_json: JSON.stringify(rules),
         join_code,
+        session_token: generateToken(),
         created_at: nowIso()
       };
       statements.insertSession.run(session);
@@ -1874,6 +2528,20 @@ async function start() {
 
   fastify.get('/api/sessions', async () => {
     return statements.listSessions.all();
+  });
+
+  fastify.post<{ Body: { joinCode?: string } }>('/api/sessions/resolve', async (request, reply) => {
+    const joinCode = request.body?.joinCode?.trim().toUpperCase();
+    if (!joinCode) {
+      reply.status(400).send({ error: 'joinCode is required.' });
+      return;
+    }
+    const session = statements.getSessionByJoinCode.get(joinCode) as Session | undefined;
+    if (!session) {
+      reply.status(404).send({ error: 'Join code not found.' });
+      return;
+    }
+    reply.send({ session_id: session.id, session_title: session.title, status: session.status });
   });
 
   fastify.get<{ Params: { id: string } }>('/api/sessions/:id', async (request, reply) => {
@@ -1887,7 +2555,219 @@ async function start() {
       statements.updateSessionJoinCode.run(joinCode, session.id);
       session.join_code = joinCode;
     }
+    if (!session.session_token) {
+      const token = generateToken();
+      statements.updateSessionToken.run(token, session.id);
+      session.session_token = token;
+    }
     reply.send(session);
+  });
+
+  fastify.post<{ Params: { id: string }; Body: { joinCode?: string; displayName?: string } }>(
+    '/api/sessions/:id/join',
+    async (request, reply) => {
+      const session = statements.getSession.get(request.params.id) as Session | undefined;
+      if (!session) {
+        reply.status(404).send({ error: 'Session not found.' });
+        return;
+      }
+      if (!session.join_code) {
+        const joinCode = generateJoinCode();
+        statements.updateSessionJoinCode.run(joinCode, session.id);
+        session.join_code = joinCode;
+      }
+      const joinCode = request.body?.joinCode?.trim().toUpperCase();
+      if (!joinCode) {
+        reply.status(400).send({ error: 'joinCode is required.' });
+        return;
+      }
+      if (joinCode !== session.join_code) {
+        reply.status(403).send({ error: 'Join code mismatch.' });
+        return;
+      }
+      const displayName = request.body?.displayName?.trim();
+      if (!displayName) {
+        reply.status(400).send({ error: 'Display name is required.' });
+        return;
+      }
+      if (session.status === 'finished') {
+        reply.status(400).send({ error: 'Session is finished.' });
+        return;
+      }
+      const rules = parseRules(session.rules_json);
+      if (!rules.multiplayer?.enabled && !rules.lan_enabled) {
+        reply.status(403).send({ error: 'LAN join is disabled for this session.' });
+        return;
+      }
+      const ip = normalizeIp(request.ip);
+      if (!rateLimit(`join:${session.id}:${ip}`, 8, 60_000)) {
+        reply.status(429).send({ error: 'Join rate limit exceeded.' });
+        return;
+      }
+      const player = resolvePlayerForName(displayName);
+      statements.insertSessionPlayer.run({ session_id: session.id, player_id: player.id, created_at: nowIso() });
+      const clientToken = generateToken();
+      const userAgent = typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null;
+      statements.insertSessionClient.run({
+        client_token: clientToken,
+        session_id: session.id,
+        player_id: player.id,
+        created_at: nowIso(),
+        last_seen: nowIso(),
+        ip: ip || null,
+        user_agent: userAgent
+      });
+      broadcastSessionState(session.id);
+      reply.send({
+        session_id: session.id,
+        session_title: session.title,
+        player_id: player.id,
+        client_token: clientToken
+      });
+    }
+  );
+
+  fastify.get<{ Params: { id: string } }>('/api/sessions/:id/state', async (request, reply) => {
+    const session = statements.getSession.get(request.params.id) as Session | undefined;
+    if (!session) {
+      reply.status(404).send({ error: 'Session not found.' });
+      return;
+    }
+    const isHost = hasHostToken(request);
+    if (isHost) {
+      const state = buildClientState(session.id, null, true);
+      reply.send(state);
+      return;
+    }
+    const clientToken = getClientToken(request);
+    if (!clientToken) {
+      reply.status(403).send({ error: 'Client token required.' });
+      return;
+    }
+    const sessionClient = getSessionClientForToken(session.id, clientToken, request);
+    if (!sessionClient) {
+      reply.status(403).send({ error: 'Invalid client token.' });
+      return;
+    }
+    const state = buildClientState(session.id, sessionClient.player_id, false);
+    reply.send(state);
+  });
+
+  fastify.post<{ Params: { id: string }; Body: { player_id?: string } }>('/api/sessions/:id/claim', async (request, reply) => {
+    const session = statements.getSession.get(request.params.id) as Session | undefined;
+    if (!session) {
+      reply.status(404).send({ error: 'Session not found.' });
+      return;
+    }
+    const rules = parseRules(session.rules_json);
+    const multiplayer = getMultiplayerConfig(rules);
+    if (!multiplayer.enabled || !multiplayer.claimEnabled) {
+      reply.status(400).send({ error: 'Claim is disabled.' });
+      return;
+    }
+    let playerId: string | null = null;
+    const isHost = hasHostToken(request);
+    const clientToken = getClientToken(request);
+    if (clientToken) {
+      const sessionClient = getSessionClientForToken(session.id, clientToken, request);
+      if (!sessionClient) {
+        reply.status(403).send({ error: 'Invalid client token.' });
+        return;
+      }
+      playerId = sessionClient.player_id;
+    } else if (isHost) {
+      playerId = request.body?.player_id ?? null;
+    } else {
+      reply.status(403).send({ error: 'Client token required.' });
+      return;
+    }
+    if (!playerId) {
+      reply.status(400).send({ error: 'player_id is required.' });
+      return;
+    }
+    const ip = normalizeIp(request.ip);
+    const rateKey = `claim:${session.id}:${playerId}:${clientToken ?? 'host'}:${ip}`;
+    if (!rateLimit(rateKey, 1, 2000)) {
+      reply.status(429).send({ error: 'Claim rate limit exceeded.' });
+      return;
+    }
+
+    const lockoutRemaining = getLockoutRemaining(session.id, playerId);
+    if (lockoutRemaining > 0) {
+      reply.send({ error_code: 'PLAYER_LOCKED_OUT', remainingSeconds: lockoutRemaining });
+      return;
+    }
+
+    const active = buildActiveRoundResponse(
+      session.id,
+      multiplayer.cardDistribution === 'perPlayer' ? playerId : null
+    );
+    if (!active) {
+      reply.status(404).send({ error: 'No active round.' });
+      return;
+    }
+
+    const metadata = parseRoundMetadata(active.round);
+    if (metadata.claim) {
+      const claimCheck = canStartClaim(metadata.claim, playerId);
+      if (!claimCheck.ok) {
+        reply.send({
+          error_code: 'CLAIM_ACTIVE',
+          remainingSeconds: claimCheck.remainingSeconds ?? 0,
+          player_id: claimCheck.activePlayerId
+        });
+        return;
+      }
+      if (metadata.claim.playerId === playerId && claimCheck.remainingSeconds) {
+        const state = buildClientState(session.id, isHost ? null : playerId, isHost);
+        reply.send({
+          ok: true,
+          claim: { player_id: playerId, started_at: metadata.claim.startedAt, expires_at: metadata.claim.expiresAt },
+          state
+        });
+        return;
+      }
+    }
+
+    const startedAt = nowIso();
+    const expiresAt = new Date(Date.now() + multiplayer.claimWindowSeconds * 1000).toISOString();
+    metadata.claim = { playerId, startedAt, expiresAt };
+    statements.updateRoundMetadata.run(JSON.stringify(metadata), active.round.id);
+    scheduleClaimTimeout(session.id, active.round.id, expiresAt);
+    broadcastSessionState(session.id);
+    const state = buildClientState(session.id, isHost ? null : playerId, isHost);
+    reply.send({ ok: true, claim: { player_id: playerId, started_at: startedAt, expires_at: expiresAt }, state });
+  });
+
+  fastify.post<{ Params: { id: string }; Body: { player_id?: string } }>('/api/sessions/:id/kick', async (request, reply) => {
+    const session = statements.getSession.get(request.params.id) as Session | undefined;
+    if (!session) {
+      reply.status(404).send({ error: 'Session not found.' });
+      return;
+    }
+    if (!hasHostToken(request)) {
+      reply.status(403).send({ error: 'Host token required.' });
+      return;
+    }
+    const playerId = request.body?.player_id;
+    if (!playerId) {
+      reply.status(400).send({ error: 'player_id is required.' });
+      return;
+    }
+    statements.deleteSessionClientsForPlayer.run(session.id, playerId);
+    statements.deleteSessionPlayer.run(session.id, playerId);
+    statements.clearPlayerLockout.run(session.id, playerId);
+    const rounds = statements.listActiveRounds.all(session.id) as Round[];
+    for (const round of rounds) {
+      const metadata = parseRoundMetadata(round);
+      if (metadata.claim?.playerId === playerId) {
+        metadata.claim = undefined;
+        statements.updateRoundMetadata.run(JSON.stringify(metadata), round.id);
+        clearClaimTimer(round.id);
+      }
+    }
+    broadcastSessionState(session.id);
+    reply.send({ ok: true });
   });
 
   fastify.post<{ Params: { id: string } }>('/api/sessions/:id/start', async (request, reply) => {
@@ -1918,6 +2798,7 @@ async function start() {
       reply.status(500).send({ error: 'Unable to create an active round.' });
       return;
     }
+    broadcastSessionState(session.id);
     reply.send(stripRoundMetadata(active));
   });
 
@@ -1934,20 +2815,36 @@ async function start() {
       statements.setPrankState.run(session.id, activate ? 1 : 0, nowIso());
 
       if (activate && session.status === 'live') {
-        const activeRound = statements.getActiveRound.get(session.id) as Round | undefined;
-        if (activeRound) {
-          statements.markRoundSolved.run(null, nowIso(), activeRound.id);
-        }
         const rules = parseRules(session.rules_json);
-        createRoundForSession(session.id, rules, { prankMode: true });
+        const activeRounds = statements.listActiveRounds.all(session.id) as Round[];
+        if (activeRounds.length === 0) {
+          createRoundForSession(session.id, rules, { prankMode: true });
+        } else {
+          for (const round of activeRounds) {
+            statements.markRoundSolved.run(null, nowIso(), round.id);
+            const metadata = parseRoundMetadata(round);
+            createRoundForSession(session.id, rules, {
+              prankMode: true,
+              ownerPlayerId: metadata.ownerPlayerId ?? null
+            });
+          }
+        }
       }
 
+      broadcastSessionState(session.id);
       reply.send({ ok: true, active: activate });
     }
   );
 
-  fastify.get<{ Params: { id: string } }>('/api/sessions/:id/active-round', async (request, reply) => {
-    const active = buildActiveRoundResponse(request.params.id);
+  fastify.get<{ Params: { id: string }; Querystring: { playerId?: string } }>(
+    '/api/sessions/:id/active-round',
+    async (request, reply) => {
+    const playerId = request.query?.playerId?.trim() || null;
+    if (playerId && !hasHostToken(request)) {
+      reply.status(403).send({ error: 'Host token required for player views.' });
+      return;
+    }
+    const active = buildActiveRoundResponse(request.params.id, playerId);
     if (!active) {
       reply.status(404).send({ error: 'No active round.' });
       return;
@@ -1964,6 +2861,8 @@ async function start() {
     reply.send(stripRoundMetadata({
       round: active.round,
       card: active.card,
+      claim: active.claim,
+      multiplayer: active.multiplayer,
       timer: active.timer,
       hints: active.hints,
       activeRules: active.activeRules,
@@ -1971,7 +2870,7 @@ async function start() {
     }));
   });
 
-  fastify.post<{ Params: { id: string }; Body: { player_id: string; expression_raw: string } }>(
+  fastify.post<{ Params: { id: string }; Body: { player_id?: string; expression_raw?: string; client_token?: string } }>(
     '/api/sessions/:id/submit',
     async (request, reply) => {
       const session = statements.getSession.get(request.params.id) as Session | undefined;
@@ -1979,33 +2878,79 @@ async function start() {
         reply.status(404).send({ error: 'Session not found.' });
         return;
       }
-      const active = buildActiveRoundResponse(request.params.id);
+      const clientToken = getClientToken(request);
+      const isHost = hasHostToken(request);
+      let playerId = request.body?.player_id;
+      let source: 'host' | 'lan' = 'host';
+      if (clientToken) {
+        const sessionClient = getSessionClientForToken(session.id, clientToken, request);
+        if (!sessionClient) {
+          reply.status(403).send({ error: 'Invalid client token.' });
+          return;
+        }
+        playerId = sessionClient.player_id;
+        source = 'lan';
+      } else if (!isHost) {
+        reply.status(403).send({ error: 'Client token required.' });
+        return;
+      }
+      const expressionRaw = request.body?.expression_raw;
+      if (!playerId || !expressionRaw) {
+        reply.status(400).send({ error: 'player_id and expression_raw are required.' });
+        return;
+      }
+      const membership = statements.sessionPlayerExists.get(request.params.id, playerId);
+      if (!membership) {
+        reply.status(400).send({ error: 'Player not in session.' });
+        return;
+      }
+      const ip = normalizeIp(request.ip);
+      const rateKey = `submit:${session.id}:${playerId}:${clientToken ?? 'host'}:${ip}`;
+      if (!rateLimit(rateKey, 5, 10_000)) {
+        reply.status(429).send({ error: 'Submit rate limit exceeded.' });
+        return;
+      }
+      const rules = parseRules(session.rules_json);
+      const multiplayer = getMultiplayerConfig(rules);
+      const active = buildActiveRoundResponse(
+        request.params.id,
+        multiplayer.cardDistribution === 'perPlayer' ? playerId : null
+      );
       if (!active) {
         reply.status(404).send({ error: 'No active round.' });
         return;
       }
-      const { player_id, expression_raw } = request.body;
-      if (!player_id || !expression_raw) {
-        reply.status(400).send({ error: 'player_id and expression_raw are required.' });
-        return;
-      }
-      const membership = statements.sessionPlayerExists.get(request.params.id, player_id);
-      if (!membership) {
-        reply.status(400).send({ error: 'Player not in session.' });
+      if (expressionRaw.length > MAX_EXPRESSION_LENGTH) {
+        reply.send(stripRoundMetadata({
+          result: { correct: false, error_code: 'EXPRESSION_TOO_LONG' },
+          round: active.round,
+          card: active.card,
+          leaderboard: active.leaderboard,
+          skipEnabled: active.skipEnabled,
+          skipsRemaining: active.skipsRemaining,
+          skipPenaltySummary: active.skipPenaltySummary,
+          claim: active.claim,
+          multiplayer: active.multiplayer,
+          timeout: active.timeout,
+          timer: active.timer,
+          hints: active.hints,
+          activeRules: active.activeRules
+        }));
         return;
       }
       const response = handleApprovedSubmission({
         session,
         active,
-        playerId: player_id,
-        expressionRaw: expression_raw,
-        source: 'host'
+        playerId,
+        expressionRaw,
+        source
       });
+      broadcastSessionState(session.id);
       reply.send(stripRoundMetadata(response));
     }
   );
 
-  fastify.post<{ Params: { id: string }; Body: { reason?: string; selected_player_id?: string } }>(
+  fastify.post<{ Params: { id: string }; Body: { reason?: string; selected_player_id?: string; owner_player_id?: string } }>(
     '/api/sessions/:id/skip',
     async (request, reply) => {
       const session = statements.getSession.get(request.params.id) as Session | undefined;
@@ -2013,13 +2958,23 @@ async function start() {
         reply.status(404).send({ error: 'Session not found.' });
         return;
       }
+      if (!hasHostToken(request)) {
+        reply.status(403).send({ error: 'Host token required.' });
+        return;
+      }
       const rules = parseRules(session.rules_json);
-      const active = buildActiveRoundResponse(request.params.id);
+      const multiplayer = getMultiplayerConfig(rules);
+      const ownerPlayerId = request.body?.owner_player_id ?? null;
+      const active = buildActiveRoundResponse(
+        request.params.id,
+        multiplayer.cardDistribution === 'perPlayer' ? ownerPlayerId : null
+      );
       if (!active) {
         reply.send({ ok: false, error_code: 'NO_ACTIVE_ROUND' });
         return;
       }
 
+      const metadata = parseRoundMetadata(active.round);
       const { reason, selected_player_id } = request.body ?? {};
       const outcome = performSkip({
         sessionId: session.id,
@@ -2036,7 +2991,11 @@ async function start() {
           markRoundSkipped: statements.markRoundSkipped
         },
         nowIso,
-        createNextRound: () => createRoundForSession(session.id, rules, { prankMode: prankSessions.get(session.id) === true })
+        createNextRound: () =>
+          createRoundForSession(session.id, rules, {
+            prankMode: prankSessions.get(session.id) === true,
+            ownerPlayerId: metadata.ownerPlayerId ?? null
+          })
       });
 
       if (!outcome.ok) {
@@ -2044,13 +3003,14 @@ async function start() {
         return;
       }
 
-      const next = buildActiveRoundResponse(session.id);
+      const next = buildActiveRoundResponse(session.id, metadata.ownerPlayerId ?? null);
       const nextInfo = getSkipInfo(session.id, rules);
       if (!next) {
         reply.status(500).send({ error: 'Unable to create a new round.' });
         return;
       }
 
+      broadcastSessionState(session.id);
       reply.send(stripRoundMetadata({
         ok: true,
         skipped: {
@@ -2061,6 +3021,8 @@ async function start() {
         round: next.round,
         card: next.card,
         leaderboard: next.leaderboard,
+        claim: next.claim,
+        multiplayer: next.multiplayer,
         timer: next.timer,
         hints: next.hints,
         activeRules: next.activeRules,
@@ -2108,9 +3070,15 @@ async function start() {
         reply.status(409).send({ error: 'Round is no longer active.' });
         return;
       }
-      const active = buildActiveRoundResponse(session.id);
+      const roundMetadata = parseRoundMetadata(round);
+      const active = buildActiveRoundResponse(session.id, roundMetadata.ownerPlayerId ?? null);
       if (!active) {
         reply.status(404).send({ error: 'No active round.' });
+        return;
+      }
+      if (active.round.id !== round.id) {
+        statements.updateAttemptApproval.run('rejected', attempt.id);
+        reply.status(409).send({ error: 'Round is no longer active.' });
         return;
       }
 
@@ -2207,8 +3175,12 @@ async function start() {
       });
       transaction();
 
-      createRoundForSession(session.id, rules, { prankMode: prankSessions.get(session.id) === true });
-      const next = buildActiveRoundResponse(session.id);
+      createRoundForSession(session.id, rules, {
+        prankMode: prankSessions.get(session.id) === true,
+        ownerPlayerId: metadata.ownerPlayerId ?? null
+      });
+      const next = buildActiveRoundResponse(session.id, metadata.ownerPlayerId ?? null);
+      broadcastSessionState(session.id);
       reply.send(stripRoundMetadata({
         result: { correct: true, points, error_code: 'OK', bonus_points: bonusPoints || undefined },
         round: next?.round ?? active.round,
@@ -2241,8 +3213,17 @@ async function start() {
   );
 
   fastify.post<{ Body: { join_code: string; display_name?: string } }>('/api/play/join', async (request, reply) => {
-    const { join_code, display_name } = request.body;
-    const session = statements.getSessionByJoinCode.get(join_code) as Session | undefined;
+    const joinCode = request.body?.join_code?.trim().toUpperCase();
+    const display_name = request.body?.display_name;
+    if (!joinCode) {
+      reply.status(400).send({ error: 'Join code is required.' });
+      return;
+    }
+    if (!rateLimit(`play:join:${normalizeIp(request.ip)}`, 10, 60_000)) {
+      reply.status(429).send({ error: 'Join rate limit exceeded.' });
+      return;
+    }
+    const session = statements.getSessionByJoinCode.get(joinCode) as Session | undefined;
     if (!session) {
       reply.status(404).send({ error: 'Join code not found.' });
       return;
@@ -2267,7 +3248,12 @@ async function start() {
   });
 
   fastify.post<{ Body: { join_code: string } }>('/api/play/active', async (request, reply) => {
-    const session = statements.getSessionByJoinCode.get(request.body.join_code) as Session | undefined;
+    const joinCode = request.body?.join_code?.trim().toUpperCase();
+    if (!joinCode) {
+      reply.status(400).send({ error: 'Join code is required.' });
+      return;
+    }
+    const session = statements.getSessionByJoinCode.get(joinCode) as Session | undefined;
     if (!session) {
       reply.status(404).send({ error: 'Join code not found.' });
       return;
@@ -2294,8 +3280,14 @@ async function start() {
   fastify.post<{ Body: { join_code: string; display_name: string; expression_raw: string } }>(
     '/api/play/submit',
     async (request, reply) => {
-      const { join_code, display_name, expression_raw } = request.body;
-      const session = statements.getSessionByJoinCode.get(join_code) as Session | undefined;
+      const joinCode = request.body?.join_code?.trim().toUpperCase();
+      const display_name = request.body?.display_name;
+      const expression_raw = request.body?.expression_raw;
+      if (!joinCode || !display_name || !expression_raw) {
+        reply.status(400).send({ error: 'join_code, display_name, and expression_raw are required.' });
+        return;
+      }
+      const session = statements.getSessionByJoinCode.get(joinCode) as Session | undefined;
       if (!session) {
         reply.status(404).send({ error: 'Join code not found.' });
         return;
@@ -2305,6 +3297,10 @@ async function start() {
         reply.status(403).send({ error: 'LAN mode is disabled for this session.' });
         return;
       }
+      if (!rateLimit(`play:submit:${session.id}:${normalizeIp(request.ip)}`, 10, 10_000)) {
+        reply.status(429).send({ error: 'Submit rate limit exceeded.' });
+        return;
+      }
       const active = buildActiveRoundResponse(session.id);
       if (!active) {
         reply.status(404).send({ error: 'No active round.' });
@@ -2312,6 +3308,25 @@ async function start() {
       }
       const player = resolvePlayerForName(display_name);
       statements.insertSessionPlayer.run({ session_id: session.id, player_id: player.id, created_at: nowIso() });
+
+      if (expression_raw.length > MAX_EXPRESSION_LENGTH) {
+        reply.send({ error_code: 'EXPRESSION_TOO_LONG' });
+        return;
+      }
+
+      const multiplayer = getMultiplayerConfig(rules);
+      if (multiplayer.enabled && multiplayer.claimEnabled) {
+        if (!active.claim || !active.claim.active) {
+          reply.send({ error_code: 'CLAIM_REQUIRED' });
+          return;
+        }
+        if (active.claim.player_id !== player.id) {
+          const expiresAt = active.claim.expires_at ? new Date(active.claim.expires_at).getTime() : 0;
+          const remainingSeconds = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+          reply.send({ error_code: 'CLAIM_ACTIVE', remainingSeconds });
+          return;
+        }
+      }
 
       if (rules.lan_auto_accept) {
         const response = handleApprovedSubmission({
@@ -2399,6 +3414,7 @@ async function start() {
     prankSessions.delete(session.id);
     statements.setPrankState.run(session.id, 0, nowIso());
     maybeCalibrateDifficulty();
+    broadcastSessionState(session.id);
     reply.send({ ok: true });
   });
 
@@ -2568,15 +3584,51 @@ async function start() {
   }
 
   const requestedPort = process.env.ARENA_PORT ? Number(process.env.ARENA_PORT) : 0;
-  await fastify.listen({ port: requestedPort, host: '127.0.0.1' });
-  const address = fastify.server.address();
-  const port = typeof address === 'object' && address ? address.port : requestedPort;
-  const url = `http://localhost:${port}`;
+  await fastify.ready();
+
+  const requestHandler = (req: http.IncomingMessage, res: http.ServerResponse) => {
+    fastify.server.emit('request', req, res);
+  };
+
+  const attachWebsocket = (server: http.Server) => {
+    server.on('upgrade', (request, socket, head) => {
+      const url = request.url ?? '';
+      if (!url.startsWith('/ws')) {
+        socket.destroy();
+        return;
+      }
+      wsServer.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+        wsServer.emit('connection', ws, request);
+      });
+    });
+  };
+
+  const listenServer = (host: string, port: number) =>
+    new Promise<http.Server>((resolve, reject) => {
+      const server = http.createServer(requestHandler);
+      attachWebsocket(server);
+      server.listen(port, host, () => resolve(server));
+      server.on('error', (err) => reject(err));
+    });
+
+  const localServer = await listenServer('127.0.0.1', requestedPort || 0);
+  const address = localServer.address();
+  serverPort = typeof address === 'object' && address ? address.port : requestedPort;
+  const url = `http://localhost:${serverPort}`;
+  const lanIp = getLanIPv4();
+  if (lanIp) {
+    try {
+      await listenServer(lanIp, serverPort);
+    } catch (err) {
+      console.warn(`Unable to bind LAN interface ${lanIp}.`);
+    }
+  }
+
   console.log(`24 Arena running at ${url}`);
 
   const portFile = process.env.ARENA_PORT_FILE || path.join(projectRoot, '.arena-port');
   try {
-    fs.writeFileSync(portFile, JSON.stringify({ port, url }, null, 2));
+    fs.writeFileSync(portFile, JSON.stringify({ port: serverPort, url }, null, 2));
   } catch {
     // Non-fatal.
   }

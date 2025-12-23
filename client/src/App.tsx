@@ -8,12 +8,16 @@ import LiveSession from './pages/LiveSession';
 import SessionSummary from './pages/SessionSummary';
 import Analytics from './pages/Analytics';
 import Projector from './pages/Projector';
-import PlayerSubmit from './pages/PlayerSubmit';
+import Join from './pages/Join';
+import Play from './pages/Play';
 import CardDebug from './pages/CardDebug';
 
 export default function App() {
   const location = useLocation();
-  const hideChrome = location.pathname.startsWith('/projector') || location.pathname.startsWith('/play');
+  const hideChrome =
+    location.pathname.startsWith('/projector') ||
+    location.pathname.startsWith('/play') ||
+    location.pathname.startsWith('/join');
   const clickTimes = useRef<number[]>([]);
   const prankArmKey = 'arena_prank_arm';
   const sessionMatch = location.pathname.match(/^\/sessions\/([^/]+)/);
@@ -89,7 +93,9 @@ export default function App() {
         <Route path="/sessions/:id/summary" element={<SessionSummary />} />
         <Route path="/sessions/:id/analytics" element={<Analytics />} />
         <Route path="/projector/:id" element={<Projector />} />
-        <Route path="/play" element={<PlayerSubmit />} />
+        <Route path="/join" element={<Join />} />
+        <Route path="/play/:id" element={<Play />} />
+        <Route path="/play" element={<Join />} />
         <Route path="/card-debug" element={<CardDebug />} />
       </Routes>
     </div>

@@ -29,6 +29,8 @@ export default function Projector() {
   const [hints, setHints] = useState<{ hint1?: string | null; hint2?: string | null; enabled: boolean } | null>(null);
   const [activeRules, setActiveRules] = useState<ActiveRules | null>(null);
   const [timeout, setTimeout] = useState<{ expired: boolean; solution?: string | null; remainingSeconds?: number | null } | null>(null);
+  const [claim, setClaim] = useState<{ active: boolean; player_name?: string | null; expires_at?: string | null } | null>(null);
+  const [multiplayer, setMultiplayer] = useState<{ enabled: boolean; cardDistribution: 'shared' | 'perPlayer' } | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -44,6 +46,8 @@ export default function Projector() {
           setHints(data.hints ?? null);
           setActiveRules(data.activeRules ?? null);
           setTimeout(data.timeout ?? null);
+          setClaim(data.claim ?? null);
+          setMultiplayer(data.multiplayer ?? null);
         })
         .catch((err) => setError(err.message));
     };
@@ -88,6 +92,9 @@ export default function Projector() {
       : "Time's up. Next card soon."
     : '';
   const timeoutRemaining = timeout?.expired ? timeout.remainingSeconds ?? null : null;
+  const claimRemaining = claim?.expires_at
+    ? Math.max(0, Math.ceil((new Date(claim.expires_at).getTime() - Date.now()) / 1000))
+    : null;
 
   return (
     <div className="projector">
@@ -111,6 +118,14 @@ export default function Projector() {
               <div className="chip">Submissions open in {coldStartRemaining}s</div>
             )}
             {activeRules?.reveal?.enabled && <div className="chip">Blind reveal</div>}
+          </div>
+        )}
+        {multiplayer?.enabled && multiplayer.cardDistribution === 'perPlayer' && (
+          <div className="banner subtle">Per-player cards active</div>
+        )}
+        {claim?.active && (
+          <div className="banner warning">
+            Now answering: {claim.player_name ?? 'Player'} {claimRemaining !== null ? `(${claimRemaining}s)` : ''}
           </div>
         )}
         {timer && timer.mode !== 'off' && (

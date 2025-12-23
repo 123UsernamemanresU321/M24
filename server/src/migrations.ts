@@ -207,6 +207,25 @@ const migrations: Array<{ id: string; up: string }> = [
       CREATE INDEX IF NOT EXISTS idx_rounds_session ON rounds(session_id);
       CREATE INDEX IF NOT EXISTS idx_rounds_status ON rounds(status);
     `
+  },
+  {
+    id: '014_add_session_tokens_and_clients',
+    up: `
+      ALTER TABLE sessions ADD COLUMN session_token TEXT;
+      CREATE TABLE IF NOT EXISTS session_clients (
+        client_token TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        player_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        ip TEXT,
+        user_agent TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_clients_session ON session_clients(session_id);
+      CREATE INDEX IF NOT EXISTS idx_session_clients_player ON session_clients(player_id);
+    `
   }
 ];
 

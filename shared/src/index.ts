@@ -13,3 +13,4 @@ export * from './importUtils.js';
 export * from './shape.js';
 export * from './signature.js';
 export * from './solvable.js';
+export * from './multiplayer.js';

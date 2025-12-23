@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { defaultOps } from '@arena/shared';
 import { createSession, setPrankMode, startSession } from '../api';
@@ -18,6 +18,13 @@ export default function SessionSetup() {
   const [hint2After, setHint2After] = useState(50);
   const [lanEnabled, setLanEnabled] = useState(false);
   const [lanAutoAccept, setLanAutoAccept] = useState(true);
+  const [multiplayerEnabled, setMultiplayerEnabled] = useState(false);
+  const [cardDistribution, setCardDistribution] = useState<'shared' | 'perPlayer'>('shared');
+  const [claimEnabled, setClaimEnabled] = useState(true);
+  const [claimWindowSeconds, setClaimWindowSeconds] = useState(10);
+  const [wrongLockoutSeconds, setWrongLockoutSeconds] = useState(10);
+  const [claimPenaltyBase, setClaimPenaltyBase] = useState(0);
+  const [claimPenaltyMax, setClaimPenaltyMax] = useState(2);
   const [noUndoInput, setNoUndoInput] = useState(false);
   const [scarcityEnabled, setScarcityEnabled] = useState(false);
   const [scarcityBanSet, setScarcityBanSet] = useState({ add: true, sub: true, mul: true, div: true });
@@ -42,6 +49,13 @@ export default function SessionSetup() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
+  useEffect(() => {
+    if (multiplayerEnabled) {
+      setLanEnabled(true);
+      setLanAutoAccept(true);
+    }
+  }, [multiplayerEnabled]);
+
   const scoringChanged = (['1', '2', '3', '4'] as const).some(
     (tier) => scoring[tier] !== defaultScoring[tier]
   );
@@ -61,6 +75,11 @@ export default function SessionSetup() {
     coldStartEnabled ? `Cold start: ${coldStartSeconds}s` : null,
     blindRevealEnabled ? `Blind reveal: every ${blindRevealInterval}s` : null,
     uniquenessBonusEnabled ? `Uniqueness bonus: +${uniquenessBonusPoints}` : null,
+    multiplayerEnabled
+      ? `LAN multiplayer: ${cardDistribution === 'perPlayer' ? 'per-player cards' : 'shared card'}${
+          claimEnabled ? `, claim ${claimWindowSeconds}s` : ''
+        }`
+      : null,
     skipEnabled
       ? `Skip: ${skipLimitMode === 'unlimited' ? 'unlimited' : `${skipLimit} max`}${
           skipPenaltyMode === 'none' ? '' : `, penalty -${skipPenaltyPoints} (${skipPenaltyMode === 'leader' ? 'leader' : 'selected player'})`
@@ -111,6 +130,20 @@ export default function SessionSetup() {
               limit: skipLimitMode === 'unlimited' ? null : Math.max(1, Math.floor(skipLimit)),
               penaltyMode: skipPenaltyMode,
               penaltyPoints: Math.max(0, Math.floor(skipPenaltyPoints))
+            }
+          : { enabled: false },
+        multiplayer: multiplayerEnabled
+          ? {
+              enabled: true,
+              cardDistribution,
+              claimEnabled,
+              claimWindowSeconds: Math.max(5, Math.floor(claimWindowSeconds)),
+              wrongLockoutSeconds: Math.max(5, Math.floor(wrongLockoutSeconds)),
+              claimPenalty: {
+                mode: 'leaderboardScaled' as const,
+                base: Math.max(0, Math.floor(claimPenaltyBase)),
+                max: Math.max(0, Math.floor(claimPenaltyMax))
+              }
             }
           : { enabled: false }
       });
@@ -272,10 +305,15 @@ export default function SessionSetup() {
           <div>
             <label>LAN Submissions</label>
             <label className="checkbox">
-              <input type="checkbox" checked={lanEnabled} onChange={() => setLanEnabled((prev) => !prev)} />
+              <input
+                type="checkbox"
+                checked={lanEnabled}
+                onChange={() => setLanEnabled((prev) => !prev)}
+                disabled={multiplayerEnabled}
+              />
               Enable LAN player submissions
             </label>
-            {lanEnabled && (
+            {lanEnabled && !multiplayerEnabled && (
               <label className="checkbox">
                 <input
                   type="checkbox"
@@ -284,6 +322,86 @@ export default function SessionSetup() {
                 />
                 Auto-accept correct submissions
               </label>
+            )}
+            {multiplayerEnabled && (
+              <div className="helper">LAN multiplayer uses direct submissions and join codes.</div>
+            )}
+          </div>
+          <div>
+            <label>LAN Multiplayer</label>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={multiplayerEnabled}
+                onChange={() => setMultiplayerEnabled((prev) => !prev)}
+              />
+              Enable LAN multiplayer (join code + claims)
+            </label>
+            {multiplayerEnabled && (
+              <div className="panel subtle" style={{ marginTop: '10px' }}>
+                <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+                  <div>
+                    <label>Card distribution</label>
+                    <select
+                      value={cardDistribution}
+                      onChange={(event) => setCardDistribution(event.target.value as 'shared' | 'perPlayer')}
+                    >
+                      <option value="shared">Shared card (everyone)</option>
+                      <option value="perPlayer">Per-player cards</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="checkbox">
+                      <input
+                        type="checkbox"
+                        checked={claimEnabled}
+                        onChange={() => setClaimEnabled((prev) => !prev)}
+                      />
+                      Require claim before submit
+                    </label>
+                  </div>
+                </div>
+                {claimEnabled && (
+                  <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+                    <div>
+                      <label>Claim window (seconds)</label>
+                      <input
+                        type="number"
+                        min="5"
+                        value={claimWindowSeconds}
+                        onChange={(event) => setClaimWindowSeconds(Number(event.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <label>Wrong/timeout lockout (seconds)</label>
+                      <input
+                        type="number"
+                        min="5"
+                        value={wrongLockoutSeconds}
+                        onChange={(event) => setWrongLockoutSeconds(Number(event.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <label>Timeout penalty base</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={claimPenaltyBase}
+                        onChange={(event) => setClaimPenaltyBase(Number(event.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <label>Timeout penalty max</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={claimPenaltyMax}
+                        onChange={(event) => setClaimPenaltyMax(Number(event.target.value))}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
           </div>
           <details className="optional-modes">

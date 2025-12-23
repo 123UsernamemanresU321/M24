@@ -1,4 +1,5 @@
 import type { Card, LeaderboardRow, Player, Round, Session, SessionRules } from '@arena/shared';
+import { getHostToken, setHostToken } from './utils/tokens';
 
 export type ActiveRules = {
   restrictedOps?: { bannedOps: Array<'add' | 'sub' | 'mul' | 'div'> } | null;
@@ -39,9 +40,30 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function boot() {
-  return request<{ dataDir: string; serverVersion: string; port?: number; lanUrls?: string[] }>(`/api/boot`, {
-    method: 'POST'
+function hostHeaders() {
+  const token = getHostToken();
+  return token ? { 'x-host-token': token } : {};
+}
+
+function clientHeaders(clientToken?: string | null) {
+  return clientToken ? { 'x-client-token': clientToken } : {};
+}
+
+export async function boot() {
+  const data = await request<{ dataDir: string; serverVersion: string; port?: number; lanUrls?: string[]; hostToken?: string }>(
+    `/api/boot`,
+    { method: 'POST' }
+  );
+  if (data.hostToken) {
+    setHostToken(data.hostToken);
+  }
+  return data;
+}
+
+export function getNetworkInfo() {
+  return request<{ hostname: string; lanIPv4: string | null; port?: number }>(`/api/network-info`, {
+    method: 'GET',
+    headers: hostHeaders()
   });
 }
 
@@ -99,6 +121,73 @@ export function listSessions() {
   return request<Session[]>('/api/sessions');
 }
 
+export function resolveSession(joinCode: string) {
+  return request<{ session_id: string; session_title: string; status: string }>(`/api/sessions/resolve`, {
+    method: 'POST',
+    body: JSON.stringify({ joinCode })
+  });
+}
+
+export function joinSession(sessionId: string, joinCode: string, displayName: string) {
+  return request<{ session_id: string; session_title: string; player_id: string; client_token: string }>(
+    `/api/sessions/${sessionId}/join`,
+    { method: 'POST', body: JSON.stringify({ joinCode, displayName }) }
+  );
+}
+
+export type ClientState = {
+  session: Session;
+  player: Player | null;
+  lockoutRemaining: number;
+  round: Round;
+  card: Card;
+  leaderboard: LeaderboardRow[];
+  skipEnabled?: boolean;
+  skipsRemaining?: number | null;
+  skipPenaltySummary?: SkipInfo['skipPenaltySummary'];
+  timeout?: { expired: boolean; solution?: string | null; remainingSeconds?: number | null } | null;
+  claim?: {
+    active: boolean;
+    player_id: string | null;
+    player_name?: string | null;
+    started_at?: string | null;
+    expires_at?: string | null;
+  } | null;
+  multiplayer?: SessionRules['multiplayer'] & {
+    enabled: boolean;
+    cardDistribution: 'shared' | 'perPlayer';
+    claimEnabled: boolean;
+    claimWindowSeconds: number;
+    wrongLockoutSeconds: number;
+    claimPenalty: { mode: 'leaderboardScaled'; base: number; max: number };
+  };
+  activeRules?: ActiveRules;
+  timer?: { mode: 'off' | 'countdown' | 'stopwatch'; elapsedSeconds: number; remainingSeconds?: number };
+  hints?: { enabled: boolean; hint1?: string | null; hint2?: string | null };
+};
+
+export function getSessionState(sessionId: string, clientToken: string) {
+  return request<ClientState>(`/api/sessions/${sessionId}/state`, {
+    method: 'GET',
+    headers: clientHeaders(clientToken)
+  });
+}
+
+export function claimRound(sessionId: string, clientToken: string) {
+  return request<{ ok?: boolean; error_code?: string; remainingSeconds?: number; state?: ClientState }>(
+    `/api/sessions/${sessionId}/claim`,
+    { method: 'POST', headers: clientHeaders(clientToken), body: JSON.stringify({}) }
+  );
+}
+
+export function kickPlayer(sessionId: string, playerId: string) {
+  return request<{ ok: boolean }>(`/api/sessions/${sessionId}/kick`, {
+    method: 'POST',
+    headers: hostHeaders(),
+    body: JSON.stringify({ player_id: playerId })
+  });
+}
+
 export function clearSessionHistory() {
   return request<{ ok: true; deletedSessions: number; deletedCards: number }>('/api/sessions/clear-history', {
     method: 'POST'
@@ -128,6 +217,7 @@ export function createSession(input: {
   blindReveal?: SessionRules['blindReveal'];
   uniquenessBonusPoints?: number;
   skip?: SessionRules['skip'];
+  multiplayer?: SessionRules['multiplayer'];
 }) {
   return request<Session>('/api/sessions', { method: 'POST', body: JSON.stringify(input) });
 }
@@ -155,32 +245,48 @@ export function startSession(id: string) {
   } & SkipInfo>(`/api/sessions/${id}/start`, { method: 'POST' });
 }
 
-export function getActiveRound(id: string) {
+export function getActiveRound(id: string, playerId?: string) {
+  const query = playerId ? `?playerId=${encodeURIComponent(playerId)}` : '';
   return request<{
     round: Round;
     card: Card;
     leaderboard: LeaderboardRow[];
+    claim?: ClientState['claim'];
+    multiplayer?: ClientState['multiplayer'];
     timer?: { mode: 'off' | 'countdown' | 'stopwatch'; elapsedSeconds: number; remainingSeconds?: number };
     hints?: { enabled: boolean; hint1?: string | null; hint2?: string | null };
     activeRules?: ActiveRules;
     timeout?: { expired: boolean; solution?: string | null; remainingSeconds?: number | null } | null;
-  } & SkipInfo>(`/api/sessions/${id}/active-round`);
+  } & SkipInfo>(`/api/sessions/${id}/active-round${query}`, {
+    method: 'GET',
+    headers: playerId ? hostHeaders() : undefined
+  });
 }
 
-export function submitAttempt(id: string, input: { player_id: string; expression_raw: string }) {
+export function submitAttempt(
+  id: string,
+  input: { player_id?: string; expression_raw: string },
+  clientToken?: string
+) {
   return request<{
     result: { correct: boolean; error_code: string; points?: number; remainingSeconds?: number; bonus_points?: number };
     round: Round;
     card: Card;
     leaderboard: LeaderboardRow[];
+    claim?: ClientState['claim'];
+    multiplayer?: ClientState['multiplayer'];
     timer?: { mode: 'off' | 'countdown' | 'stopwatch'; elapsedSeconds: number; remainingSeconds?: number };
     hints?: { enabled: boolean; hint1?: string | null; hint2?: string | null };
     activeRules?: ActiveRules;
     timeout?: { expired: boolean; solution?: string | null; remainingSeconds?: number | null } | null;
-  } & SkipInfo>(`/api/sessions/${id}/submit`, { method: 'POST', body: JSON.stringify(input) });
+  } & SkipInfo>(`/api/sessions/${id}/submit`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+    headers: clientToken ? clientHeaders(clientToken) : hostHeaders()
+  });
 }
 
-export function skipRound(id: string, input?: { reason?: string; selected_player_id?: string }) {
+export function skipRound(id: string, input?: { reason?: string; selected_player_id?: string; owner_player_id?: string }) {
   return request<{
     ok: boolean;
     error_code?: string;
@@ -189,13 +295,19 @@ export function skipRound(id: string, input?: { reason?: string; selected_player
     round?: Round;
     card?: Card;
     leaderboard?: LeaderboardRow[];
+    claim?: ClientState['claim'];
+    multiplayer?: ClientState['multiplayer'];
     timer?: { mode: 'off' | 'countdown' | 'stopwatch'; elapsedSeconds: number; remainingSeconds?: number };
     hints?: { enabled: boolean; hint1?: string | null; hint2?: string | null };
     activeRules?: ActiveRules;
     timeout?: { expired: boolean; solution?: string | null; remainingSeconds?: number | null } | null;
     skipEnabled?: boolean;
     skipPenaltySummary?: SkipInfo['skipPenaltySummary'];
-  }>(`/api/sessions/${id}/skip`, { method: 'POST', body: JSON.stringify(input ?? {}) });
+  }>(`/api/sessions/${id}/skip`, {
+    method: 'POST',
+    body: JSON.stringify(input ?? {}),
+    headers: hostHeaders()
+  });
 }
 
 export function getLeaderboard(id: string) {
@@ -258,6 +370,8 @@ export function getProjector(id: string) {
   return request<{
     round: Round;
     card: Card;
+    claim?: ClientState['claim'];
+    multiplayer?: ClientState['multiplayer'];
     timer?: { mode: 'off' | 'countdown' | 'stopwatch'; elapsedSeconds: number; remainingSeconds?: number };
     hints?: { enabled: boolean; hint1?: string | null; hint2?: string | null };
     activeRules?: ActiveRules;

@@ -62,15 +62,10 @@ export function initSchema(db: Db): void {
       status TEXT NOT NULL CHECK (status IN ('active', 'solved', 'skipped')),
       solved_by_player_id TEXT,
       solved_at TEXT,
-      skipped_at TEXT,
-      skipped_by_player_id TEXT,
-      skip_reason TEXT,
-      metadata_json TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
       FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE,
-      FOREIGN KEY (solved_by_player_id) REFERENCES players(id) ON DELETE SET NULL,
-      FOREIGN KEY (skipped_by_player_id) REFERENCES players(id) ON DELETE SET NULL
+      FOREIGN KEY (solved_by_player_id) REFERENCES players(id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS attempts (
@@ -88,30 +83,6 @@ export function initSchema(db: Db): void {
       FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS player_lockouts (
-      session_id TEXT NOT NULL,
-      player_id TEXT NOT NULL,
-      locked_until TEXT NOT NULL,
-      PRIMARY KEY (session_id, player_id),
-      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-      FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS session_solution_signatures (
-      session_id TEXT NOT NULL,
-      signature TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (session_id, signature),
-      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS session_prank_state (
-      session_id TEXT PRIMARY KEY,
-      is_active INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
-    );
-
     CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
     CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at);
     CREATE INDEX IF NOT EXISTS idx_session_players_session ON session_players(session_id);
@@ -119,8 +90,6 @@ export function initSchema(db: Db): void {
     CREATE INDEX IF NOT EXISTS idx_rounds_status ON rounds(status);
     CREATE INDEX IF NOT EXISTS idx_attempts_round ON attempts(round_id);
     CREATE INDEX IF NOT EXISTS idx_attempts_player ON attempts(player_id);
-    CREATE INDEX IF NOT EXISTS idx_lockouts_session ON player_lockouts(session_id);
-    CREATE INDEX IF NOT EXISTS idx_solution_signatures_session ON session_solution_signatures(session_id);
   `);
 }
 

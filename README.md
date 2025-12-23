@@ -5,7 +5,7 @@ Local-first host console for competitive 24-game sessions. Designed to run fully
 ## Phase 2 Highlights
 
 - Players: modal add/edit, fast search, CSV/JSON import with duplicate handling, exports.
-- Sessions: advanced operations toggles, timers, hints, LAN submissions, custom tier scoring.
+- Sessions: advanced operations toggles, timers, hints, LAN multiplayer (join codes + claims), custom tier scoring.
 - Optional modes: skip button, scarcity rounds, shape constraints, blind reveal, uniqueness bonus.
 - Two-screen mode: projector view.
 - Analytics dashboard + session bundle export (zip with CSV + JSON summary).
@@ -110,17 +110,26 @@ JSON:
 
 Duplicate handling options: skip, update existing, or import anyway.
 
-## LAN Mode (Offline, Same Wi-Fi)
+## LAN Multiplayer (Offline, Same Wi‑Fi)
 
-1. Enable **LAN submissions** in Session Setup.
-2. Start the session and read the Join Code.
-3. Players open the LAN URL on their phones:
+1. Enable **LAN Multiplayer** in Session Setup.
+2. Start the session. The host view shows:
+   - Join code (large)
+   - Primary join link / QR (`hostname.local`)
+   - Fallback join link / QR (LAN IP)
+3. Players open the join link on their phones:
 
 ```
-http://<local-ip>:PORT/play
+http://<host>.local:PORT/join?code=ABCD
 ```
 
-The host UI shows a LAN URL when available. If needed, find the local IP on macOS:
+If `.local` does not resolve on a device, use the fallback link with the LAN IP shown on the host screen.
+
+Gameplay note: Players must click **“I think I have the answer”** to lock in a 10-second claim window before submitting.
+
+The server binds only to `127.0.0.1` and your private LAN IP (no UPnP, no public exposure).
+
+To find the LAN IP manually on macOS:
 
 ```bash
 ipconfig getifaddr en0

@@ -9,6 +9,7 @@ type PlayerSelectProps = {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  disabled?: boolean;
 };
 
 function asOption(player: PlayerOption): { id: string; name: string } {
@@ -18,7 +19,13 @@ function asOption(player: PlayerOption): { id: string; name: string } {
   return { id: player.id, name: player.display_name };
 }
 
-export default function PlayerSelect({ players, value, onChange, placeholder = 'Search players' }: PlayerSelectProps) {
+export default function PlayerSelect({
+  players,
+  value,
+  onChange,
+  placeholder = 'Search players',
+  disabled = false
+}: PlayerSelectProps) {
   const [query, setQuery] = useState('');
 
   const filtered = useMemo(() => {
@@ -43,8 +50,9 @@ export default function PlayerSelect({ players, value, onChange, placeholder = '
         placeholder={placeholder}
         value={query}
         onChange={(event) => setQuery(event.target.value)}
+        disabled={disabled}
       />
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
+      <select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
         <option value="">Select player</option>
         {filtered.map((player) => (
           <option key={player.id} value={player.id}>

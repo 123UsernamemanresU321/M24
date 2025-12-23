@@ -62,6 +62,18 @@ export type SessionRules = {
     penaltyMode?: 'none' | 'selectedPlayer' | 'leader';
     penaltyPoints?: number;
   };
+  multiplayer?: {
+    enabled?: boolean;
+    cardDistribution?: 'shared' | 'perPlayer';
+    claimEnabled?: boolean;
+    claimWindowSeconds?: number;
+    wrongLockoutSeconds?: number;
+    claimPenalty?: {
+      mode: 'leaderboardScaled';
+      base?: number;
+      max?: number;
+    };
+  };
 };
 
 export type Session = {
@@ -70,6 +82,7 @@ export type Session = {
   status: SessionStatus;
   rules_json: string;
   join_code?: string | null;
+  session_token?: string | null;
   created_at: string;
 };
 
@@ -144,6 +157,21 @@ export type ActiveRoundResponse = {
     points: number;
   } | null;
   timeout?: { expired: boolean; solution?: string | null; remainingSeconds?: number | null } | null;
+  claim?: {
+    active: boolean;
+    player_id: string | null;
+    player_name?: string | null;
+    started_at?: string | null;
+    expires_at?: string | null;
+  } | null;
+  multiplayer?: {
+    enabled: boolean;
+    cardDistribution: 'shared' | 'perPlayer';
+    claimEnabled: boolean;
+    claimWindowSeconds: number;
+    wrongLockoutSeconds: number;
+    claimPenalty: { mode: 'leaderboardScaled'; base: number; max: number };
+  };
   activeRules?: {
     restrictedOps?: { bannedOps: Array<'add' | 'sub' | 'mul' | 'div'> } | null;
     shapeConstraint?: 'shapeA' | 'shapeB' | null;

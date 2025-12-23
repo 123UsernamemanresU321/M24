@@ -62,6 +62,14 @@ export type NormalizedRules = {
     penaltyMode: 'none' | 'selectedPlayer' | 'leader';
     penaltyPoints: number;
   };
+  multiplayer: {
+    enabled: boolean;
+    cardDistribution: 'shared' | 'perPlayer';
+    claimEnabled: boolean;
+    claimWindowSeconds: number;
+    wrongLockoutSeconds: number;
+    claimPenalty: { mode: 'leaderboardScaled'; base: number; max: number };
+  };
 };
 
 export function normalizeRules(input?: SessionRules | null): NormalizedRules {
@@ -70,6 +78,7 @@ export function normalizeRules(input?: SessionRules | null): NormalizedRules {
   const mistakePenalty = rules.mistakePenalty ?? { mode: 'none' };
   const blindReveal = rules.blindReveal ?? { enabled: false };
   const skip = rules.skip ?? { enabled: false };
+  const multiplayer = rules.multiplayer ?? {};
   return {
     scoring: normalizeScoring(rules.scoring ?? rules.pointsByTier),
     difficulty_mode: rules.difficulty_mode ?? 'mixed',
@@ -112,6 +121,18 @@ export function normalizeRules(input?: SessionRules | null): NormalizedRules {
         : Math.max(1, Math.floor(skip.limit ?? 3)),
       penaltyMode: skip.penaltyMode ?? 'none',
       penaltyPoints: Math.max(0, Math.floor(skip.penaltyPoints ?? 0))
+    },
+    multiplayer: {
+      enabled: multiplayer.enabled ?? false,
+      cardDistribution: multiplayer.cardDistribution ?? 'shared',
+      claimEnabled: multiplayer.claimEnabled ?? true,
+      claimWindowSeconds: Math.max(5, Math.floor(multiplayer.claimWindowSeconds ?? 10)),
+      wrongLockoutSeconds: Math.max(5, Math.floor(multiplayer.wrongLockoutSeconds ?? 10)),
+      claimPenalty: {
+        mode: 'leaderboardScaled',
+        base: Math.max(0, Math.floor(multiplayer.claimPenalty?.base ?? 0)),
+        max: Math.max(0, Math.floor(multiplayer.claimPenalty?.max ?? 2))
+      }
     }
   };
 }
