@@ -194,7 +194,8 @@ export default function PlayerSubmit() {
     : activeRules?.shapeConstraint === 'shapeB'
       ? 'a op (b op (c op d))'
       : '';
-    ?activeRules.coldStartRemaining
+  const coldStartRemaining = activeRules?.coldStartRemaining && activeRules.coldStartRemaining > 0
+    ? activeRules.coldStartRemaining
     : null;
 
   // Claim logic
@@ -263,6 +264,7 @@ export default function PlayerSubmit() {
               <div className="banner bad">
                 Locked out for {lockoutRemaining}s
               </div>
+            )}
             {/* Power Cards Inventory */}
             {state?.powerCards?.enabled && (
               <div style={{ margin: '12px 0' }}>

@@ -1416,6 +1416,7 @@ button:disabled,
   color: #2c3e50;
   background: linear-gradient(135deg, #6c63ff, #ff6584);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
@@ -1449,6 +1450,95 @@ button:disabled,
   }
 
   to {
+    opacity: 1;
+  }
+}
+
+/* Power Inventory Styles */
+.power-cards-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.power-card-slot {
+  position: relative;
+  width: 52px;
+  height: 68px;
+  background: white;
+  border: 2px solid #e0d7cc;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  padding: 0;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+}
+
+.power-card-slot .power-icon {
+  font-size: 28px;
+}
+
+.power-card-slot:hover:not(:disabled) {
+  border-color: #6c63ff;
+  transform: translateY(-2px);
+}
+
+.power-card-slot.selected {
+  border-color: #6c63ff;
+  background: #f0efff;
+  transform: translateY(-4px);
+  box-shadow: 0 8px 16px rgba(108, 99, 255, 0.2);
+}
+
+.power-card-slot.active {
+  border-color: #4caf50;
+}
+
+.power-active-pulse {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 14px;
+  height: 14px;
+  background: #4caf50;
+  border-radius: 50%;
+  border: 3px solid white;
+  animation: pulse-green 2s infinite;
+  z-index: 2;
+}
+
+@keyframes pulse-green {
+  0% {
+    box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7);
+  }
+
+  70% {
+    box-shadow: 0 0 0 10px rgba(76, 175, 80, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(76, 175, 80, 0);
+  }
+}
+
+.power-activation-panel {
+  margin-top: 16px;
+  animation: slideDownFade 0.3s ease-out;
+  background: var(--card) !important;
+}
+
+@keyframes slideDownFade {
+  from {
+    transform: translateY(-10px);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateY(0);
     opacity: 1;
   }
 }

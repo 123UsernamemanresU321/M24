@@ -162,7 +162,8 @@ function normalizeRules(input: SessionRules | null | undefined): SessionRules {
     blindReveal,
     uniquenessBonusPoints: rules.uniquenessBonusPoints ?? defaultRules.uniquenessBonusPoints,
     skip,
-    multiplayer
+    multiplayer,
+    powerCards: normalizePowerCardsConfig(rules.powerCards)
   };
 }
 
@@ -1521,7 +1522,7 @@ async function start() {
       playerPowerCards = getPlayerInventory(powerStmts, sessionId, playerId);
     }
 
-    return {
+    const state = {
       session: {
         ...session,
         join_code: isHost ? session.join_code : null,
@@ -1529,9 +1530,14 @@ async function start() {
       },
       player: player ?? null,
       lockoutRemaining,
-      powerCards: playerPowerCards,
       ...active
-    };
+    } as any;
+
+    if (state.powerCards?.enabled && playerId) {
+      state.powerCards.inventory = getPlayerInventory(powerStmts, sessionId, playerId);
+    }
+
+    return state;
   };
 
   function broadcastSessionState(sessionId: string) {
@@ -2505,6 +2511,7 @@ async function start() {
       uniquenessBonusPoints?: number;
       skip?: SessionRules['skip'];
       multiplayer?: SessionRules['multiplayer'];
+      powerCards?: SessionRules['powerCards'];
     }
   }>(
     '/api/sessions',
@@ -2532,7 +2539,8 @@ async function start() {
         blindReveal,
         uniquenessBonusPoints,
         skip,
-        multiplayer
+        multiplayer,
+        powerCards
       } = request.body;
       if (!title || title.trim() === '') {
         reply.status(400).send({ error: 'Title is required.' });
@@ -2564,7 +2572,8 @@ async function start() {
         blindReveal,
         uniquenessBonusPoints,
         skip,
-        multiplayer
+        multiplayer,
+        powerCards
       });
       const join_code = generateJoinCode();
       const session = {

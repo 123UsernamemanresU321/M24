@@ -99,6 +99,11 @@ export default function LiveSession() {
   const [skipInfo, setSkipInfo] = useState<SkipInfo | null>(null);
   const [claim, setClaim] = useState<ClaimState | null>(null);
   const [multiplayerInfo, setMultiplayerInfo] = useState<SessionRules['multiplayer'] | null>(null);
+  const [powerCards, setPowerCards] = useState<{
+    enabled: boolean;
+    inventory?: any[];
+    activeEffects?: any;
+  } | null>(null);
   const [previewPlayerId, setPreviewPlayerId] = useState('');
   const [playerId, setPlayerId] = useState('');
   const [expression, setExpression] = useState('');
@@ -155,6 +160,7 @@ export default function LiveSession() {
         });
         setClaim(data.claim ?? null);
         setMultiplayerInfo(data.multiplayer ?? null);
+        setPowerCards((data as any).powerCards ?? null);
         if (data.leaderboard.length > 0 && !playerId) {
           setPlayerId(data.leaderboard[0].player_id);
         }
@@ -189,6 +195,7 @@ export default function LiveSession() {
           });
           setClaim(data.claim ?? null);
           setMultiplayerInfo(data.multiplayer ?? null);
+          setPowerCards((data as any).powerCards ?? null);
         })
         .catch(() => null);
     };
@@ -383,7 +390,7 @@ export default function LiveSession() {
     concat: 'concat'
   };
   const bannedOps = activeRules?.restrictedOps?.bannedOps ?? [];
-  const bannedSet = new Set(bannedOps);
+  const bannedSet = new Set<string>(bannedOps);
   const allowedOps = Object.entries(rules.ops)
     .filter(([op, enabled]) => enabled && !bannedSet.has(op))
     .map(([op]) => opLabels[op] ?? op);
@@ -517,6 +524,7 @@ export default function LiveSession() {
             {coldStartRemaining !== null && <span className="chip">Submissions open in {coldStartRemaining}s</span>}
             {activeRules?.reveal?.enabled && <span className="chip">Blind reveal</span>}
             {skipEnabled && <span className="chip">{skipLimitLabel}</span>}
+            {powerCards?.enabled && <span className="chip success">Power Cards Active</span>}
           </div>
         </div>
 
@@ -698,6 +706,33 @@ export default function LiveSession() {
           <div className="section-title">Leaderboard</div>
           <LeaderboardTable rows={leaderboard} onKick={multiplayerEnabled ? handleKick : undefined} />
         </div>
+
+        {powerCards?.enabled && powerCards.activeEffects && (
+          <div className="panel" style={{ border: '2px solid #6c63ff' }}>
+            <div className="section-title">✨ Active Power Effects</div>
+            <div className="chip-row">
+              {powerCards.activeEffects.frozenUntilRound && (
+                <span className="chip warning">❄️ LEADERBOARD FROZEN</span>
+              )}
+              {powerCards.activeEffects.lockedOps?.map((op: string) => (
+                <span key={op} className="chip bad">🚫 {opLabels[op] ?? op} LOCKED</span>
+              ))}
+            </div>
+            <div style={{ marginTop: '12px' }}>
+              {Object.entries(powerCards.activeEffects.playerEffects || {}).map(([pId, effects]: [string, any]) => {
+                const player = leaderboard.find(r => r.player_id === pId);
+                return (
+                  <div key={pId} style={{ fontSize: '14px', marginBottom: '4px' }}>
+                    <strong>{player?.display_name || 'Player'}:</strong>{' '}
+                    {effects.shieldActive && <span title="Shield">🛡️ </span>}
+                    {effects.doubleActive && <span title="Double Points">✨ </span>}
+                    {effects.swapIndices && <span title="Swap Numbers">🔀 </span>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
       <Modal open={skipModalOpen} title="Skip this card?" onClose={() => setSkipModalOpen(false)}>
         <div className="form">

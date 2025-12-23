@@ -48,9 +48,8 @@ export default function PowerInventory({ inventory, onActivate, disabled }: Powe
     const handleActivate = async () => {
         if (!selectedPower || isActivating) return;
 
-        // Validation for powers requiring input
         if (selectedPower.power_type === 'lockOp' && !targetOp) {
-            return; // UI should disable button
+            return;
         }
 
         setIsActivating(true);
@@ -61,7 +60,6 @@ export default function PowerInventory({ inventory, onActivate, disabled }: Powe
             setSelectedPowerId(null);
         } catch (err) {
             console.error('Failed to activate power:', err);
-            // Optional: show error toast?
         } finally {
             setIsActivating(false);
         }
@@ -70,70 +68,60 @@ export default function PowerInventory({ inventory, onActivate, disabled }: Powe
     if (inventory.length === 0) return null;
 
     return (
-        <div className="power-inventory">
-            <h3 className="text-sm font-bold uppercase text-gray-500 mb-2">Power Cards</h3>
-            <div className="flex flex-wrap gap-2">
-                {inventory.map((item) => (
-                    <button
-                        key={item.id}
-                        onClick={() => handleClick(item.id)}
-                        className={`
-              relative flex items-center justify-center w-12 h-16 border-2 rounded-lg transition-all
-              ${selectedPowerId === item.id ? 'border-blue-500 bg-blue-50 -translate-y-1 shadow-md' : 'border-gray-300 bg-white hover:border-gray-400'}
-              ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
-            `}
-                        title={POWER_DESCRIPTIONS[item.power_type]}
-                    >
-                        <span className="text-2xl">{POWER_ICONS[item.power_type] ?? '?'}</span>
-                        {item.state_json && JSON.parse(item.state_json).activated && (
-                            <span className="absolute -top-1 -right-1 flex h-3 w-3">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
-                            </span>
-                        )}
-                    </button>
-                ))}
+        <div className="power-inventory-container">
+            <div className="section-title" style={{ fontSize: '11px', opacity: 0.7, marginBottom: '8px' }}>Your Power Inventory</div>
+            <div className="power-cards-row">
+                {inventory.map((item) => {
+                    const isActivated = item.state_json && JSON.parse(item.state_json).activated;
+                    return (
+                        <button
+                            key={item.id}
+                            onClick={() => handleClick(item.id)}
+                            className={`power-card-slot ${selectedPowerId === item.id ? 'selected' : ''} ${isActivated ? 'active' : ''}`}
+                            disabled={disabled}
+                            title={POWER_DESCRIPTIONS[item.power_type]}
+                        >
+                            <span className="power-icon">{POWER_ICONS[item.power_type] ?? '?'}</span>
+                            {isActivated && <div className="power-active-pulse" />}
+                        </button>
+                    );
+                })}
             </div>
 
             {selectedPower && (
-                <div className="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                    <div className="flex justify-between items-start mb-2">
-                        <div>
-                            <div className="font-bold capitalize">{selectedPower.power_type}</div>
-                            <div className="text-xs text-gray-500">{POWER_DESCRIPTIONS[selectedPower.power_type]}</div>
-                        </div>
-                        <button
-                            onClick={() => setSelectedPowerId(null)}
-                            className="text-gray-400 hover:text-gray-600"
-                        >
-                            ✕
-                        </button>
+                <div className="power-activation-panel panel">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <div style={{ fontWeight: 800, textTransform: 'capitalize' }}>{selectedPower.power_type}</div>
+                        <button className="button ghost small" onClick={() => setSelectedPowerId(null)}>✕</button>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#666', marginBottom: '12px' }}>
+                        {POWER_DESCRIPTIONS[selectedPower.power_type]}
                     </div>
 
                     {selectedPower.power_type === 'lockOp' && (
-                        <div className="flex gap-2 mb-3">
-                            {['add', 'sub', 'mul', 'div'].map(op => (
-                                <button
-                                    key={op}
-                                    onClick={() => setTargetOp(op)}
-                                    className={`w-8 h-8 rounded flex items-center justify-center font-bold ${targetOp === op ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}`}
-                                >
-                                    {{ add: '+', sub: '-', mul: '×', div: '÷' }[op]}
-                                </button>
-                            ))}
+                        <div className="op-selector" style={{ marginBottom: '12px' }}>
+                            <div style={{ fontSize: '11px', marginBottom: '4px' }}>Select operation to lock:</div>
+                            <div className="button-row">
+                                {['add', 'sub', 'mul', 'div'].map(op => (
+                                    <button
+                                        key={op}
+                                        onClick={() => setTargetOp(op)}
+                                        className={`button small ${targetOp === op ? '' : 'ghost'}`}
+                                    >
+                                        {{ add: '+', sub: '-', mul: '×', div: '÷' }[op]}
+                                    </button>
+                                ))}
+                            </div>
                         </div>
                     )}
 
                     <button
+                        className="button primary w-full"
                         onClick={handleActivate}
                         disabled={isActivating || (selectedPower.power_type === 'lockOp' && !targetOp)}
-                        className={`
-              w-full py-1.5 rounded font-bold text-white text-sm
-              ${isActivating ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}
-              disabled:opacity-50 disabled:cursor-not-allowed
-            `}
+                        style={{ width: '100%' }}
                     >
-                        {isActivating ? 'Activating...' : 'Activate'}
+                        {isActivating ? 'Activating...' : 'Activate Power'}
                     </button>
                 </div>
             )}
