@@ -42,7 +42,7 @@ function seedDb(rules: SessionRules) {
 describe('Power Cards System', () => {
     const baseConfig: PowerCardsConfig = {
         enabled: true,
-        dropRateByTier: { '1': 1, '2': 1, '3': 1, '4': 1 }, // 100% drop
+        dropRateByTier: { '1': 100, '2': 100, '3': 100, '4': 100 }, // 100% drop
         maxHeld: 3,
         awardRule: 'onSolve',
         allowed: {
@@ -79,9 +79,10 @@ describe('Power Cards System', () => {
         expect(getPlayerInventory(powerStmts, sessionId, playerA)).toHaveLength(1);
 
         // Award second - should fail
-        const result2 = awardPower(powerStmts, sessionId, playerA, 1, baseConfig, mockRng);
+        const limitedConfig = { ...baseConfig, maxHeld: 1 };
+        const result2 = awardPower(powerStmts, sessionId, playerA, 1, limitedConfig, mockRng);
         expect(result2.awarded).toBe(false);
-        expect(result2.reason).toBe('max_held');
+        expect(result2.reason).toBe('maxHeld');
         expect(getPlayerInventory(powerStmts, sessionId, playerA)).toHaveLength(1);
     });
 
@@ -90,12 +91,14 @@ describe('Power Cards System', () => {
 
         // Manually insert a shield power
         const powerId = 'power-1';
-        powerStmts.awardPower.run({
+        powerStmts.insertPower.run({
             id: powerId,
             session_id: sessionId,
             player_id: playerA,
             power_type: 'shield',
-            created_at: nowIso()
+            acquired_at: nowIso(),
+            consumed_at: null,
+            state_json: null
         });
 
         const result = activatePower({
@@ -115,7 +118,7 @@ describe('Power Cards System', () => {
 
         expect(result.ok).toBe(true);
         if (!result.ok) return;
-        expect(result.effect).toBe('shield_active');
+        expect(result.effect).toContain('Shield activated');
 
         // Verify state in DB
         const inventory = getPlayerInventory(powerStmts, sessionId, playerA);
@@ -126,12 +129,14 @@ describe('Power Cards System', () => {
         const { powerStmts, sessionId, playerA } = seedDb({ powerCards: baseConfig });
 
         const powerId = 'power-2';
-        powerStmts.awardPower.run({
+        powerStmts.insertPower.run({
             id: powerId,
             session_id: sessionId,
             player_id: playerA,
             power_type: 'lockOp',
-            created_at: nowIso()
+            acquired_at: nowIso(),
+            consumed_at: null,
+            state_json: null
         });
 
         let callbackOp: string | undefined;

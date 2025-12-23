@@ -53,6 +53,7 @@ export default function PlayerSubmit() {
   const [sessionTitle, setSessionTitle] = useState('');
   const [joined, setJoined] = useState(false);
   const [auth, setAuth] = useState<{ sessionId: string; clientToken: string } | null>(null);
+  const [playerId, setPlayerId] = useState<string | null>(null);
   const [autoAccept, setAutoAccept] = useState(true);
 
   const [state, setState] = useState<ClientState | null>(null);
@@ -94,6 +95,9 @@ export default function PlayerSubmit() {
       setAutoAccept(response.lan_auto_accept);
       if (response.session_id && response.client_token) {
         setAuth({ sessionId: response.session_id, clientToken: response.client_token });
+      }
+      if (response.player) {
+        setPlayerId(response.player.id);
       }
       setJoined(true);
       setResult('');
@@ -174,9 +178,22 @@ export default function PlayerSubmit() {
     : activeRules?.shapeConstraint === 'shapeB'
       ? 'a op (b op (c op d))'
       : '';
-  const coldStartRemaining = activeRules?.coldStartRemaining && activeRules.coldStartRemaining > 0
-    ? activeRules.coldStartRemaining
+    ?activeRules.coldStartRemaining
     : null;
+
+  // Claim logic
+  const now = Date.now();
+  const claim = state?.claim;
+  const claimExpiresAt = claim ? new Date(claim.expiresAt).getTime() : 0;
+  const claimRemaining = Math.max(0, Math.ceil((claimExpiresAt - now) / 1000));
+
+  const isClaimedByOther = claim && claim.playerId !== playerId && claimRemaining > 0;
+  const isClaimedByMe = claim && claim.playerId === playerId && claimRemaining > 0;
+
+  const lockoutRemaining = state?.lockoutRemaining ?? 0;
+  const isLockedOut = lockoutRemaining > 0;
+
+  const canInteract = card && !isClaimedByOther && !isLockedOut && coldStartRemaining === null;
 
   return (
     <div className="container" style={{ paddingBottom: '120px' }}> {/* Extra padding for drawer/sticky items */}
@@ -215,13 +232,30 @@ export default function PlayerSubmit() {
               <div className="panel">Waiting for next round...</div>
             )}
 
+            {/* Claim / Lockout Banners */}
+            {isClaimedByOther && (
+              <div className="banner lock">
+                🔒 <strong>{claim?.player_name}</strong> is answering ({claimRemaining}s)
+              </div>
+            )}
+            {isClaimedByMe && (
+              <div className="banner info">
+                ⚡️ <strong>You claimed it!</strong> Answer now ({claimRemaining}s)
+              </div>
+            )}
+            {isLockedOut && (
+              <div className="banner bad">
+                Locked out for {lockoutRemaining}s
+              </div>
+            )}
+
             {/* Power Cards Inventory */}
             {state?.powerCards?.inventory && state.powerCards.inventory.length > 0 && (
               <div style={{ margin: '12px 0' }}>
                 <PowerInventory
                   inventory={state.powerCards.inventory}
                   onActivate={handleActivatePower}
-                  disabled={activating || !card}
+                  disabled={activating || !canInteract}
                 />
               </div>
             )}
@@ -231,7 +265,7 @@ export default function PlayerSubmit() {
                 <ExpressionBuilder
                   numbers={displayNumbers}
                   onExpressionChange={setExpression}
-                  disabled={!card || coldStartRemaining !== null}
+                  disabled={!canInteract}
                   bannedOps={bannedOps}
                 />
               ) : (
@@ -241,12 +275,12 @@ export default function PlayerSubmit() {
                     value={expression}
                     onChange={(event) => setExpression(event.target.value)}
                     placeholder="(6/(1-3/4))"
-                    disabled={!card || coldStartRemaining !== null}
+                    disabled={!canInteract}
                   />
                 </div>
               )}
 
-              <button className="button" onClick={handleSubmit} disabled={!expression.trim() || coldStartRemaining !== null}>
+              <button className="button" onClick={handleSubmit} disabled={!expression.trim() || !canInteract}>
                 Submit
               </button>
 
@@ -266,7 +300,7 @@ export default function PlayerSubmit() {
               open={leaderboardOpen}
               onToggle={() => setLeaderboardOpen(!leaderboardOpen)}
               rows={leaderboard}
-              highlightPlayerId={auth?.sessionId ? undefined : undefined} // We don't have player ID easily unless we parse response, but that's ok
+              highlightPlayerId={playerId ?? undefined}
             />
           </>
         )}
