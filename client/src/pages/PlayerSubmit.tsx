@@ -4,6 +4,7 @@ import { playJoin, playSubmit, getSessionState, activatePower, type ClientState,
 import CardView from '../components/CardView';
 import ExpressionBuilder from '../components/ExpressionBuilder';
 import PowerInventory from '../components/PowerInventory';
+import PowerNotification from '../components/PowerNotification';
 import LeaderboardDrawer from '../components/LeaderboardDrawer';
 import { useDeviceProfile } from '../utils/useDeviceProfile';
 
@@ -66,6 +67,8 @@ export default function PlayerSubmit() {
   const { isMobileUI } = useDeviceProfile();
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [activating, setActivating] = useState(false);
+  const [newPower, setNewPower] = useState<string | null>(null);
+  const [prevInventorySize, setPrevInventorySize] = useState(0);
 
   useEffect(() => {
     if (!joined || !auth) {
@@ -82,6 +85,19 @@ export default function PlayerSubmit() {
     const interval = setInterval(refresh, 1000); // Faster refresh for live feedback
     return () => clearInterval(interval);
   }, [joined, auth]);
+
+  // Hype detection for new power cards
+  useEffect(() => {
+    const currentInventory = state?.powerCards?.inventory ?? [];
+    if (currentInventory.length > prevInventorySize) {
+      // Find the new card
+      const latest = currentInventory[currentInventory.length - 1]; // Simple heuristic: newest is last
+      if (latest) {
+        setNewPower(latest.power_type);
+      }
+    }
+    setPrevInventorySize(currentInventory.length);
+  }, [state?.powerCards?.inventory]);
 
   const handleJoin = async () => {
     setError('');
@@ -247,18 +263,24 @@ export default function PlayerSubmit() {
               <div className="banner bad">
                 Locked out for {lockoutRemaining}s
               </div>
-            )}
-
             {/* Power Cards Inventory */}
-            {state?.powerCards?.inventory && state.powerCards.inventory.length > 0 && (
+            {state?.powerCards?.enabled && (
               <div style={{ margin: '12px 0' }}>
-                <PowerInventory
-                  inventory={state.powerCards.inventory}
-                  onActivate={handleActivatePower}
-                  disabled={activating || !canInteract}
-                />
+                {(state.powerCards.inventory && state.powerCards.inventory.length > 0) ? (
+                  <PowerInventory
+                    inventory={state.powerCards.inventory}
+                    onActivate={handleActivatePower}
+                    disabled={activating || !canInteract}
+                  />
+                ) : (
+                  <div style={{ fontSize: '13px', color: '#999', padding: '8px', border: '1px dashed #ccc', borderRadius: '8px', textAlign: 'center' }}>
+                    Power Slots Empty (Solve faster to get drops!)
+                  </div>
+                )}
               </div>
             )}
+
+            {newPower && <PowerNotification powerType={newPower} onClose={() => setNewPower(null)} />}
 
             <div className="form">
               {isMobileUI ? (

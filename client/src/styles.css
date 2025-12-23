@@ -1000,6 +1000,7 @@ button:disabled,
     opacity: 0;
     transform: translateY(12px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -1184,13 +1185,40 @@ button:disabled,
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
-.power-card.shield { background: #e3f2fd; color: #1565c0; }
-.power-card.double { background: #fff8e1; color: #f57f17; }
-.power-card.swap { background: #f3e5f5; color: #7b1fa2; }
-.power-card.reroll { background: #e8f5e9; color: #2e7d32; }
-.power-card.freeze { background: #e0f7fa; color: #00838f; }
-.power-card.steal { background: #ffebee; color: #c62828; }
-.power-card.lockOp { background: #eceff1; color: #455a64; }
+.power-card.shield {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.power-card.double {
+  background: #fff8e1;
+  color: #f57f17;
+}
+
+.power-card.swap {
+  background: #f3e5f5;
+  color: #7b1fa2;
+}
+
+.power-card.reroll {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.power-card.freeze {
+  background: #e0f7fa;
+  color: #00838f;
+}
+
+.power-card.steal {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.power-card.lockOp {
+  background: #eceff1;
+  color: #455a64;
+}
 
 .power-card-icon {
   font-size: 16px;
@@ -1301,6 +1329,7 @@ button:disabled,
   from {
     transform: translateY(-100%);
   }
+
   to {
     transform: translateY(0);
   }
@@ -1335,10 +1364,91 @@ button:disabled,
   }
 
   /* Ensure 44px minimum touch targets */
-  .button, 
+  .button,
   .chip,
   input,
   select {
     min-height: 44px;
+  }
+}
+
+/* Power Card Notification */
+.power-notification-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  backdrop-filter: blur(2px);
+  animation: fadeIn 0.3s ease-out;
+}
+
+.power-notification-card {
+  background: white;
+  padding: 32px;
+  border-radius: 24px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  text-align: center;
+  animation: popUp 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  min-width: 240px;
+}
+
+.power-icon-large {
+  font-size: 64px;
+  margin-bottom: 16px;
+  animation: spinWiggle 1s ease-in-out infinite;
+}
+
+.power-title {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #666;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.power-name {
+  font-size: 24px;
+  font-weight: 800;
+  color: #2c3e50;
+  background: linear-gradient(135deg, #6c63ff, #ff6584);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+@keyframes popUp {
+  0% {
+    transform: scale(0.5) translateY(20px);
+    opacity: 0;
+  }
+
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes spinWiggle {
+
+  0%,
+  100% {
+    transform: rotate(-5deg);
+  }
+
+  50% {
+    transform: rotate(5deg);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
   }
 }
