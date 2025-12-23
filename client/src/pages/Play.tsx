@@ -1,7 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { claimRound, getSessionState, submitAttempt, type ClientState } from '../api';
+import { activatePower, claimRound, getSessionState, submitAttempt, type ClientState } from '../api';
 import CardView from '../components/CardView';
+import ExpressionBuilder from '../components/ExpressionBuilder';
+import PowerInventory from '../components/PowerInventory';
+import LeaderboardTable from '../components/LeaderboardTable';
+import { useDeviceProfile } from '../utils/useDeviceProfile';
 import { clearPlayerAuth, getClientToken, getPlayerName } from '../utils/tokens';
 
 const errorMessages: Record<string, string> = {
@@ -57,8 +61,27 @@ export default function Play() {
   const [result, setResult] = useState('');
   const [error, setError] = useState('');
   const [tick, setTick] = useState(0);
+  const [inputMode, setInputMode] = useState<'builder' | 'keyboard'>('builder');
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const { isMobileUI } = useDeviceProfile();
 
   const clientToken = id ? getClientToken(id) : null;
+  const [activating, setActivating] = useState(false);
+
+  const handleActivatePower = async (powerId: string, payload: any) => {
+    if (!id || !clientToken) return;
+    setActivating(true);
+    try {
+      await activatePower(id, powerId, payload, clientToken);
+      // Refresh state immediately
+      const data = await getSessionState(id, clientToken);
+      setState(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Activation failed');
+    } finally {
+      setActivating(false);
+    }
+  };
 
   useEffect(() => {
     const interval = setInterval(() => setTick((prev) => prev + 1), 1000);
@@ -308,15 +331,45 @@ export default function Play() {
         )}
 
         <div className="form">
-          <div>
-            <label>Expression</label>
-            <input
-              value={expression}
-              onChange={(event) => setExpression(event.target.value)}
-              placeholder="(6/(1-3/4))"
+          {/* Input mode toggle for mobile */}
+          {isMobileUI && (
+            <div className="button-row" style={{ marginBottom: '8px' }}>
+              <button
+                className={`button ${inputMode === 'builder' ? '' : 'secondary'}`}
+                onClick={() => setInputMode('builder')}
+                style={{ flex: 1 }}
+              >
+                Tap Build
+              </button>
+              <button
+                className={`button ${inputMode === 'keyboard' ? '' : 'secondary'}`}
+                onClick={() => setInputMode('keyboard')}
+                style={{ flex: 1 }}
+              >
+                Keyboard
+              </button>
+            </div>
+          )}
+
+          {/* Expression Builder for mobile tap mode */}
+          {isMobileUI && inputMode === 'builder' && state.card ? (
+            <ExpressionBuilder
+              numbers={displayNumbers}
+              onExpressionChange={setExpression}
               disabled={!canSubmit}
+              bannedOps={bannedOps}
             />
-          </div>
+          ) : (
+            <div>
+              <label>Expression</label>
+              <input
+                value={expression}
+                onChange={(event) => setExpression(event.target.value)}
+                placeholder="(6/(1-3/4))"
+                disabled={!canSubmit}
+              />
+            </div>
+          )}
           <button className="button" onClick={handleSubmit} disabled={!canSubmit || !expression.trim()}>
             Submit
           </button>
@@ -324,6 +377,38 @@ export default function Play() {
 
         {result && <div className="banner ok">{result}</div>}
         {error && <div className="banner bad">{error}</div>}
+
+        {/* Power Cards Inventory */}
+        {state.powerCards?.inventory && clientToken && (
+          <PowerInventory
+            inventory={state.powerCards.inventory}
+            onActivate={handleActivatePower}
+            disabled={!canSubmit || activating}
+          />
+        )}
+
+        {/* Leaderboard Section */}
+        <div className="panel" style={{ marginTop: '16px' }}>
+          <div
+            className="section-title"
+            style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+            onClick={() => setLeaderboardOpen(!leaderboardOpen)}
+          >
+            Leaderboard {leaderboardOpen ? '▲' : '▼'}
+          </div>
+          {leaderboardOpen && (
+            <LeaderboardTable rows={state.leaderboard} highlightPlayerId={playerId ?? undefined} />
+          )}
+          {!leaderboardOpen && state.leaderboard.length > 0 && (
+            <div className="mini-leaderboard">
+              {state.leaderboard.slice(0, 3).map((row, idx) => (
+                <span key={row.player_id} className={idx === 0 ? 'mini-leader' : ''}>
+                  {idx + 1}. {row.display_name}: {row.score_total}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="helper">Session: {state.session.title}</div>
         <button className="button ghost" onClick={handleLeave}>

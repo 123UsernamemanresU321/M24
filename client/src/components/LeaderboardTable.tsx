@@ -3,10 +3,12 @@ import type { LeaderboardRow } from '@arena/shared';
 
 export default function LeaderboardTable({
   rows,
-  onKick
+  onKick,
+  highlightPlayerId
 }: {
   rows: LeaderboardRow[];
   onKick?: (playerId: string) => void;
+  highlightPlayerId?: string;
 }) {
   return (
     <table className="table">
@@ -22,9 +24,12 @@ export default function LeaderboardTable({
       </thead>
       <tbody>
         {rows.map((row, index) => (
-          <tr key={row.player_id}>
+          <tr
+            key={row.player_id}
+            style={highlightPlayerId === row.player_id ? { background: 'rgba(129, 178, 154, 0.2)' } : {}}
+          >
             <td>{index + 1}</td>
-            <td>{row.display_name}</td>
+            <td>{row.display_name} {highlightPlayerId === row.player_id && '(you)'}</td>
             <td>{row.score_total}</td>
             <td>{row.correct_count}</td>
             <td>{row.wrong_count}</td>

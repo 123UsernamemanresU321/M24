@@ -45,6 +45,17 @@ export default function SessionSetup() {
   const [skipLimit, setSkipLimit] = useState(3);
   const [skipPenaltyMode, setSkipPenaltyMode] = useState<'none' | 'selectedPlayer' | 'leader'>('none');
   const [skipPenaltyPoints, setSkipPenaltyPoints] = useState(0);
+  // Power Cards state
+  const [powerCardsEnabled, setPowerCardsEnabled] = useState(false);
+  const [powerDropRates, setPowerDropRates] = useState<Record<'1' | '2' | '3' | '4', number>>({ '1': 5, '2': 10, '3': 15, '4': 25 });
+  const [powerMaxHeld, setPowerMaxHeld] = useState(1);
+  const [powerAwardRule, setPowerAwardRule] = useState<'roundStart' | 'onSolve'>('onSolve');
+  const [powerAllowed, setPowerAllowed] = useState({
+    shield: true, double: true, swap: true, reroll: true, freeze: true, steal: true, lockOp: true
+  });
+  const [powerStealPoints, setPowerStealPoints] = useState(1);
+  const [powerFreezeRounds, setPowerFreezeRounds] = useState<1 | 2>(1);
+  const [powerRerollAuthority, setPowerRerollAuthority] = useState<'hostOnly' | 'playerWithHostApprove'>('hostOnly');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
@@ -76,15 +87,14 @@ export default function SessionSetup() {
     blindRevealEnabled ? `Blind reveal: every ${blindRevealInterval}s` : null,
     uniquenessBonusEnabled ? `Uniqueness bonus: +${uniquenessBonusPoints}` : null,
     multiplayerEnabled
-      ? `LAN multiplayer: ${cardDistribution === 'perPlayer' ? 'per-player cards' : 'shared card'}${
-          claimEnabled ? `, claim ${claimWindowSeconds}s` : ''
-        }`
+      ? `LAN multiplayer: ${cardDistribution === 'perPlayer' ? 'per-player cards' : 'shared card'}${claimEnabled ? `, claim ${claimWindowSeconds}s` : ''
+      }`
       : null,
     skipEnabled
-      ? `Skip: ${skipLimitMode === 'unlimited' ? 'unlimited' : `${skipLimit} max`}${
-          skipPenaltyMode === 'none' ? '' : `, penalty -${skipPenaltyPoints} (${skipPenaltyMode === 'leader' ? 'leader' : 'selected player'})`
-        }`
-      : null
+      ? `Skip: ${skipLimitMode === 'unlimited' ? 'unlimited' : `${skipLimit} max`}${skipPenaltyMode === 'none' ? '' : `, penalty -${skipPenaltyPoints} (${skipPenaltyMode === 'leader' ? 'leader' : 'selected player'})`
+      }`
+      : null,
+    powerCardsEnabled ? `Power Cards: drop ${powerDropRates['2']}% (T2), max ${powerMaxHeld} held` : null
   ].filter((value): value is string => Boolean(value));
 
   const handleStart = async () => {
@@ -96,10 +106,10 @@ export default function SessionSetup() {
         : mistakePenaltyMode === 'lockout'
           ? { mode: 'lockout' as const, lockoutSeconds: Math.max(1, Math.floor(lockoutSeconds)) }
           : {
-              mode: 'minusPoints' as const,
-              minusPoints: Math.max(1, Math.floor(minusPoints)),
-              allowNegative
-            };
+            mode: 'minusPoints' as const,
+            minusPoints: Math.max(1, Math.floor(minusPoints)),
+            allowNegative
+          };
       const session = await createSession({
         title,
         difficulty_mode: difficultyMode,
@@ -126,25 +136,37 @@ export default function SessionSetup() {
         uniquenessBonusPoints: uniquenessBonusEnabled ? Math.max(1, Math.floor(uniquenessBonusPoints)) : 0,
         skip: skipEnabled
           ? {
-              enabled: true,
-              limit: skipLimitMode === 'unlimited' ? null : Math.max(1, Math.floor(skipLimit)),
-              penaltyMode: skipPenaltyMode,
-              penaltyPoints: Math.max(0, Math.floor(skipPenaltyPoints))
-            }
+            enabled: true,
+            limit: skipLimitMode === 'unlimited' ? null : Math.max(1, Math.floor(skipLimit)),
+            penaltyMode: skipPenaltyMode,
+            penaltyPoints: Math.max(0, Math.floor(skipPenaltyPoints))
+          }
           : { enabled: false },
         multiplayer: multiplayerEnabled
           ? {
-              enabled: true,
-              cardDistribution,
-              claimEnabled,
-              claimWindowSeconds: Math.max(5, Math.floor(claimWindowSeconds)),
-              wrongLockoutSeconds: Math.max(5, Math.floor(wrongLockoutSeconds)),
-              claimPenalty: {
-                mode: 'leaderboardScaled' as const,
-                base: Math.max(0, Math.floor(claimPenaltyBase)),
-                max: Math.max(0, Math.floor(claimPenaltyMax))
-              }
+            enabled: true,
+            cardDistribution,
+            claimEnabled,
+            claimWindowSeconds: Math.max(5, Math.floor(claimWindowSeconds)),
+            wrongLockoutSeconds: Math.max(5, Math.floor(wrongLockoutSeconds)),
+            claimPenalty: {
+              mode: 'leaderboardScaled' as const,
+              base: Math.max(0, Math.floor(claimPenaltyBase)),
+              max: Math.max(0, Math.floor(claimPenaltyMax))
             }
+          }
+          : { enabled: false },
+        powerCards: powerCardsEnabled
+          ? {
+            enabled: true,
+            dropRateByTier: powerDropRates,
+            maxHeld: powerMaxHeld,
+            awardRule: powerAwardRule,
+            allowed: powerAllowed,
+            stealPoints: powerStealPoints,
+            freezeRounds: powerFreezeRounds,
+            rerollAuthority: powerRerollAuthority
+          }
           : { enabled: false }
       });
       if (sessionStorage.getItem('arena_prank_arm') === '1') {
@@ -620,6 +642,118 @@ export default function SessionSetup() {
                       )}
                     </div>
                   </>
+                )}
+              </div>
+
+              <div className="option-block">
+                <label className="checkbox">
+                  <input type="checkbox" checked={powerCardsEnabled} onChange={() => setPowerCardsEnabled((prev) => !prev)} />
+                  Enable Power Cards
+                </label>
+                {powerCardsEnabled && (
+                  <div className="panel subtle" style={{ marginTop: '10px' }}>
+                    <div className="helper" style={{ marginBottom: '12px' }}>
+                      Collectible one-use abilities awarded on correct solves.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <label>Drop Rate by Tier (%)</label>
+                      <div className="scoring-grid">
+                        {(['1', '2', '3', '4'] as const).map((tier) => (
+                          <label key={tier} className="scoring-row">
+                            <span>Tier {tier}</span>
+                            <input
+                              className="scoring-input"
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={powerDropRates[tier]}
+                              onChange={(event) =>
+                                setPowerDropRates((prev) => ({
+                                  ...prev,
+                                  [tier]: Math.min(100, Math.max(0, Number(event.target.value)))
+                                }))
+                              }
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
+                      <div>
+                        <label>Max Held</label>
+                        <select value={powerMaxHeld} onChange={(event) => setPowerMaxHeld(Number(event.target.value) as 1 | 2 | 3)}>
+                          <option value={1}>1</option>
+                          <option value={2}>2</option>
+                          <option value={3}>3</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label>Award Rule</label>
+                        <select value={powerAwardRule} onChange={(event) => setPowerAwardRule(event.target.value as 'roundStart' | 'onSolve')}>
+                          <option value="onSolve">On Correct Solve</option>
+                          <option value="roundStart">At Round Start</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: '12px' }}>
+                      <label>Allowed Powers</label>
+                      <div className="checkbox-grid">
+                        <label className="checkbox">
+                          <input type="checkbox" checked={powerAllowed.shield} onChange={() => setPowerAllowed((prev) => ({ ...prev, shield: !prev.shield }))} />
+                          🛡️ Shield
+                        </label>
+                        <label className="checkbox">
+                          <input type="checkbox" checked={powerAllowed.double} onChange={() => setPowerAllowed((prev) => ({ ...prev, double: !prev.double }))} />
+                          ✨ Double Points
+                        </label>
+                        <label className="checkbox">
+                          <input type="checkbox" checked={powerAllowed.swap} onChange={() => setPowerAllowed((prev) => ({ ...prev, swap: !prev.swap }))} />
+                          🔀 Swap Numbers
+                        </label>
+                        <label className="checkbox">
+                          <input type="checkbox" checked={powerAllowed.reroll} onChange={() => setPowerAllowed((prev) => ({ ...prev, reroll: !prev.reroll }))} />
+                          🎲 Reroll Card
+                        </label>
+                        <label className="checkbox">
+                          <input type="checkbox" checked={powerAllowed.freeze} onChange={() => setPowerAllowed((prev) => ({ ...prev, freeze: !prev.freeze }))} />
+                          ❄️ Freeze Leaderboard
+                        </label>
+                        <label className="checkbox">
+                          <input type="checkbox" checked={powerAllowed.steal} onChange={() => setPowerAllowed((prev) => ({ ...prev, steal: !prev.steal }))} />
+                          💰 Steal Points
+                        </label>
+                        <label className="checkbox">
+                          <input type="checkbox" checked={powerAllowed.lockOp} onChange={() => setPowerAllowed((prev) => ({ ...prev, lockOp: !prev.lockOp }))} />
+                          🔒 Lock Operation
+                        </label>
+                      </div>
+                    </div>
+                    <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginTop: '12px' }}>
+                      <div>
+                        <label>Steal Points Amount</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={powerStealPoints}
+                          onChange={(event) => setPowerStealPoints(Math.max(1, Number(event.target.value)))}
+                        />
+                      </div>
+                      <div>
+                        <label>Freeze Rounds</label>
+                        <select value={powerFreezeRounds} onChange={(event) => setPowerFreezeRounds(Number(event.target.value) as 1 | 2)}>
+                          <option value={1}>1 round</option>
+                          <option value={2}>2 rounds</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label>Reroll Authority</label>
+                        <select value={powerRerollAuthority} onChange={(event) => setPowerRerollAuthority(event.target.value as 'hostOnly' | 'playerWithHostApprove')}>
+                          <option value="hostOnly">Host Only</option>
+                          <option value="playerWithHostApprove">Player (Host Approves)</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
                 )}
               </div>
 

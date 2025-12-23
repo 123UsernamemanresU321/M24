@@ -1040,3 +1040,305 @@ button:disabled,
     grid-template-columns: repeat(2, minmax(120px, 1fr));
   }
 }
+
+/* Expression Builder - Mobile Fairness */
+.expression-builder {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid var(--card-border);
+  border-radius: 16px;
+}
+
+.builder-display {
+  min-height: 48px;
+  padding: 12px 16px;
+  background: var(--bg);
+  border-radius: 12px;
+  font-size: 18px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+}
+
+.builder-expression {
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.builder-display span:empty::before {
+  content: 'Tap numbers and ops...';
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.builder-numbers {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.builder-ops {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.builder-controls {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.builder-btn {
+  min-height: 56px;
+  min-width: 56px;
+  padding: 12px;
+  font-size: 20px;
+  font-weight: 700;
+  border-radius: 12px;
+  border: 2px solid var(--card-border);
+  background: #fff;
+  cursor: pointer;
+  transition: transform 0.1s ease, background 0.15s ease;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.builder-btn:active {
+  transform: scale(0.95);
+}
+
+.builder-number {
+  background: var(--accent-2);
+  color: #fff;
+  border-color: transparent;
+  font-size: 24px;
+}
+
+.builder-number.used {
+  background: var(--muted);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.builder-op {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
+
+.builder-op.banned {
+  background: #ccc;
+  color: #888;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+
+.builder-paren {
+  font-size: 24px;
+  background: var(--accent-3);
+  color: #fff;
+  border-color: transparent;
+}
+
+.builder-action {
+  background: #f0e8dd;
+  color: var(--ink);
+}
+
+.builder-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Power Cards Inventory */
+.power-inventory {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+  background: rgba(61, 90, 128, 0.06);
+  border-radius: 12px;
+  min-height: 48px;
+}
+
+.power-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  min-height: 44px;
+  touch-action: manipulation;
+}
+
+.power-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.power-card.shield { background: #e3f2fd; color: #1565c0; }
+.power-card.double { background: #fff8e1; color: #f57f17; }
+.power-card.swap { background: #f3e5f5; color: #7b1fa2; }
+.power-card.reroll { background: #e8f5e9; color: #2e7d32; }
+.power-card.freeze { background: #e0f7fa; color: #00838f; }
+.power-card.steal { background: #ffebee; color: #c62828; }
+.power-card.lockOp { background: #eceff1; color: #455a64; }
+
+.power-card-icon {
+  font-size: 16px;
+}
+
+/* Mobile Action Bar */
+.mobile-action-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  background: #fff;
+  border-top: 1px solid var(--card-border);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.1);
+  z-index: 10;
+}
+
+.mobile-action-bar .button {
+  flex: 1;
+  min-height: 52px;
+  font-size: 16px;
+}
+
+/* Leaderboard Drawer (Mobile) */
+.leaderboard-drawer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.2);
+  transform: translateY(calc(100% - 60px));
+  transition: transform 0.3s ease;
+  z-index: 15;
+  max-height: 70vh;
+  overflow: hidden;
+}
+
+.leaderboard-drawer.open {
+  transform: translateY(0);
+}
+
+.leaderboard-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.leaderboard-drawer-title {
+  font-weight: 700;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.leaderboard-drawer-content {
+  padding: 12px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  max-height: calc(70vh - 60px);
+  overflow-y: auto;
+}
+
+/* Mini leaderboard strip */
+.mini-leaderboard {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mini-leader {
+  padding: 4px 8px;
+  background: var(--accent-3);
+  color: #fff;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+/* Claim lock banner */
+.claim-lock-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 16px 20px;
+  padding-top: calc(16px + env(safe-area-inset-top, 0px));
+  background: rgba(224, 122, 95, 0.95);
+  color: #fff;
+  text-align: center;
+  font-weight: 600;
+  font-size: 16px;
+  z-index: 20;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+/* Frozen indicator */
+.frozen-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: #e0f7fa;
+  color: #00838f;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 767px) and (pointer: coarse) {
+  .container {
+    padding-bottom: 80px;
+  }
+
+  .builder-btn {
+    min-height: 52px;
+    font-size: 18px;
+  }
+
+  .builder-number {
+    font-size: 22px;
+  }
+
+  /* Ensure 44px minimum touch targets */
+  .button, 
+  .chip,
+  input,
+  select {
+    min-height: 44px;
+  }
+}

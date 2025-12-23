@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import type { Card, Round } from '@arena/shared';
+import type { Card, Round, LeaderboardRow, PowerCard } from '@arena/shared';
 import { playActive, playJoin, playSubmit, type ActiveRules } from '../api';
 import CardView from '../components/CardView';
+import ExpressionBuilder from '../components/ExpressionBuilder';
+import { useDeviceProfile } from '../utils/useDeviceProfile';
 
 const errorMessages: Record<string, string> = {
   OK: 'Correct! Your answer solved the card.',

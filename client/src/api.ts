@@ -42,11 +42,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 function hostHeaders() {
   const token = getHostToken();
-  return token ? { 'x-host-token': token } : {};
+  if (!token) return undefined;
+  return { 'x-host-token': token };
 }
 
 function clientHeaders(clientToken?: string | null) {
-  return clientToken ? { 'x-client-token': clientToken } : {};
+  if (!clientToken) return undefined;
+  return { 'x-client-token': clientToken };
 }
 
 export async function boot() {
@@ -71,12 +73,14 @@ export function listPlayers() {
   return request<Player[]>('/api/players');
 }
 
-export function importPlayers(input: { players: Array<{
-  display_name: string;
-  age?: number | null;
-  ib_grade?: string | null;
-  notes?: string | null;
-}>; mode: 'skip' | 'update' | 'import_anyway' }) {
+export function importPlayers(input: {
+  players: Array<{
+    display_name: string;
+    age?: number | null;
+    ib_grade?: string | null;
+    notes?: string | null;
+  }>; mode: 'skip' | 'update' | 'import_anyway'
+}) {
   return request<{ inserted: number; updated: number; skipped: number; duplicates: number }>(
     '/api/players/import',
     { method: 'POST', body: JSON.stringify(input) }
@@ -164,6 +168,19 @@ export type ClientState = {
   activeRules?: ActiveRules;
   timer?: { mode: 'off' | 'countdown' | 'stopwatch'; elapsedSeconds: number; remainingSeconds?: number };
   hints?: { enabled: boolean; hint1?: string | null; hint2?: string | null };
+  powerCards?: {
+    enabled: boolean;
+    inventory?: Array<{ id: string; power_type: string; acquired_at: string; state_json?: string | null }>;
+    activeEffects?: {
+      lockedOps?: Array<'add' | 'sub' | 'mul' | 'div'>;
+      frozenUntilRound?: number;
+      playerEffects?: Record<string, {
+        shieldActive?: boolean;
+        doubleActive?: boolean;
+        swapIndices?: [number, number] | null;
+      }>;
+    };
+  };
 };
 
 export function getSessionState(sessionId: string, clientToken: string) {
@@ -171,6 +188,22 @@ export function getSessionState(sessionId: string, clientToken: string) {
     method: 'GET',
     headers: clientHeaders(clientToken)
   });
+}
+
+export function activatePower(
+  sessionId: string,
+  powerId: string,
+  payload: { targetPlayerId?: string; targetOp?: string; swapIndices?: [number, number] },
+  clientToken: string
+) {
+  return request<{ ok: true; result: { ok: true; effect: string; powerId: string } }>(
+    `/api/sessions/${sessionId}/powers/${powerId}/activate`,
+    {
+      method: 'POST',
+      headers: clientHeaders(clientToken),
+      body: JSON.stringify(payload)
+    }
+  );
 }
 
 export function claimRound(sessionId: string, clientToken: string) {
@@ -218,6 +251,7 @@ export function createSession(input: {
   uniquenessBonusPoints?: number;
   skip?: SessionRules['skip'];
   multiplayer?: SessionRules['multiplayer'];
+  powerCards?: SessionRules['powerCards'];
 }) {
   return request<Session>('/api/sessions', { method: 'POST', body: JSON.stringify(input) });
 }
@@ -435,20 +469,20 @@ export function playActive(input: { join_code: string }) {
 export function playSubmit(input: { join_code: string; display_name: string; expression_raw: string }) {
   return request<
     | {
-        status?: string;
-        attempt_id?: string;
-        correct?: boolean;
-        error_code?: string;
-        remainingSeconds?: number;
-      }
+      status?: string;
+      attempt_id?: string;
+      correct?: boolean;
+      error_code?: string;
+      remainingSeconds?: number;
+    }
     | {
-        result: { correct: boolean; error_code: string; points?: number; remainingSeconds?: number; bonus_points?: number };
-        round: Round;
-        card: Card;
-        leaderboard: LeaderboardRow[];
-        timer?: { mode: 'off' | 'countdown' | 'stopwatch'; elapsedSeconds: number; remainingSeconds?: number };
-        hints?: { enabled: boolean; hint1?: string | null; hint2?: string | null };
-        activeRules?: ActiveRules;
-      }
+      result: { correct: boolean; error_code: string; points?: number; remainingSeconds?: number; bonus_points?: number };
+      round: Round;
+      card: Card;
+      leaderboard: LeaderboardRow[];
+      timer?: { mode: 'off' | 'countdown' | 'stopwatch'; elapsedSeconds: number; remainingSeconds?: number };
+      hints?: { enabled: boolean; hint1?: string | null; hint2?: string | null };
+      activeRules?: ActiveRules;
+    }
   >('/api/play/submit', { method: 'POST', body: JSON.stringify(input) });
 }

@@ -226,6 +226,38 @@ const migrations: Array<{ id: string; up: string }> = [
       CREATE INDEX IF NOT EXISTS idx_session_clients_session ON session_clients(session_id);
       CREATE INDEX IF NOT EXISTS idx_session_clients_player ON session_clients(player_id);
     `
+  },
+  {
+    id: '015_add_power_cards',
+    up: `
+      CREATE TABLE IF NOT EXISTS player_powers (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        player_id TEXT NOT NULL,
+        power_type TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        consumed_at TEXT,
+        state_json TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_player_powers_session ON player_powers(session_id);
+      CREATE INDEX IF NOT EXISTS idx_player_powers_player ON player_powers(session_id, player_id);
+
+      CREATE TABLE IF NOT EXISTS pending_score_deltas (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        player_id TEXT NOT NULL,
+        delta INTEGER NOT NULL,
+        reason TEXT,
+        frozen_until_round INTEGER,
+        created_at TEXT NOT NULL,
+        applied_at TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_pending_deltas_session ON pending_score_deltas(session_id);
+    `
   }
 ];
 

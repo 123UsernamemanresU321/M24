@@ -18,6 +18,7 @@ import { performSkip } from './skip.js';
 import { canStartClaim, getClaimRemainingSeconds } from './claimUtils.js';
 import { createRateLimiter } from './rateLimit.js';
 import { selectRoundForOwner } from './roundOwner.js';
+import { preparePowerCardsStatements, normalizePowerCardsConfig, awardPower, getPlayerInventory, getSessionInventories, activatePower, tryConsumeShield, tryConsumeDouble, tryExecuteSteal, getActiveSwapIndices, consumeSwapPower, type PowerCardsStatements, type PowerCardsConfig, type PowerActivationContext } from './powerCards.js';
 import { computeColdStartRemaining, computeTimerState, shouldRevealHint } from '@arena/shared';
 import { astSignature, computeClaimPenalty, defaultOps, findSolutionExpressionWithOps, findUnsolvableNumbers, normalizeName, planPlayerImport, solveCard, verifyExpression, type Card, type LeaderboardRow, type OpsConfig, type Player, type PlayerInput, type Round, type Session, type SessionRules } from '@arena/shared';
 
@@ -95,43 +96,43 @@ function normalizeRules(input: SessionRules | null | undefined): SessionRules {
   const scarcityBanSet = { add: true, sub: true, mul: true, div: true, ...(rules.scarcityBanSet ?? {}) };
   const mistakePenalty = rules.mistakePenalty
     ? {
-        mode: rules.mistakePenalty.mode,
-        lockoutSeconds: rules.mistakePenalty.lockoutSeconds ?? defaultRules.mistakePenalty?.lockoutSeconds,
-        minusPoints: rules.mistakePenalty.minusPoints ?? defaultRules.mistakePenalty?.minusPoints,
-        allowNegative: rules.mistakePenalty.allowNegative ?? defaultRules.mistakePenalty?.allowNegative
-      }
+      mode: rules.mistakePenalty.mode,
+      lockoutSeconds: rules.mistakePenalty.lockoutSeconds ?? defaultRules.mistakePenalty?.lockoutSeconds,
+      minusPoints: rules.mistakePenalty.minusPoints ?? defaultRules.mistakePenalty?.minusPoints,
+      allowNegative: rules.mistakePenalty.allowNegative ?? defaultRules.mistakePenalty?.allowNegative
+    }
     : { ...(defaultRules.mistakePenalty ?? { mode: 'none' }) };
   const blindReveal = rules.blindReveal
     ? {
-        enabled: rules.blindReveal.enabled ?? defaultRules.blindReveal?.enabled,
-        intervalSeconds: rules.blindReveal.intervalSeconds ?? defaultRules.blindReveal?.intervalSeconds,
-        scheduleSeconds: rules.blindReveal.scheduleSeconds
-      }
+      enabled: rules.blindReveal.enabled ?? defaultRules.blindReveal?.enabled,
+      intervalSeconds: rules.blindReveal.intervalSeconds ?? defaultRules.blindReveal?.intervalSeconds,
+      scheduleSeconds: rules.blindReveal.scheduleSeconds
+    }
     : { ...(defaultRules.blindReveal ?? { enabled: false }) };
   const skipDefaultLimit = defaultRules.skip?.limit ?? 3;
   const skip = rules.skip
     ? {
-        enabled: rules.skip.enabled ?? defaultRules.skip?.enabled ?? false,
-        limit: rules.skip.limit === null
-          ? null
-          : Math.max(1, Math.floor(rules.skip.limit ?? skipDefaultLimit)),
-        penaltyMode: rules.skip.penaltyMode ?? defaultRules.skip?.penaltyMode ?? 'none',
-        penaltyPoints: Math.max(0, Math.floor(rules.skip.penaltyPoints ?? defaultRules.skip?.penaltyPoints ?? 0))
-      }
+      enabled: rules.skip.enabled ?? defaultRules.skip?.enabled ?? false,
+      limit: rules.skip.limit === null
+        ? null
+        : Math.max(1, Math.floor(rules.skip.limit ?? skipDefaultLimit)),
+      penaltyMode: rules.skip.penaltyMode ?? defaultRules.skip?.penaltyMode ?? 'none',
+      penaltyPoints: Math.max(0, Math.floor(rules.skip.penaltyPoints ?? defaultRules.skip?.penaltyPoints ?? 0))
+    }
     : { ...(defaultRules.skip ?? { enabled: false, limit: 3, penaltyMode: 'none', penaltyPoints: 0 }) };
   const multiplayer: SessionRules['multiplayer'] = rules.multiplayer
     ? {
-        enabled: rules.multiplayer.enabled ?? defaultRules.multiplayer?.enabled ?? false,
-        cardDistribution: rules.multiplayer.cardDistribution ?? defaultRules.multiplayer?.cardDistribution ?? 'shared',
-        claimEnabled: rules.multiplayer.claimEnabled ?? defaultRules.multiplayer?.claimEnabled ?? true,
-        claimWindowSeconds: Math.max(5, Math.floor(rules.multiplayer.claimWindowSeconds ?? defaultRules.multiplayer?.claimWindowSeconds ?? 10)),
-        wrongLockoutSeconds: Math.max(5, Math.floor(rules.multiplayer.wrongLockoutSeconds ?? defaultRules.multiplayer?.wrongLockoutSeconds ?? 10)),
-        claimPenalty: {
-          mode: 'leaderboardScaled' as const,
-          base: Math.max(0, Math.floor(rules.multiplayer.claimPenalty?.base ?? defaultRules.multiplayer?.claimPenalty?.base ?? 0)),
-          max: Math.max(0, Math.floor(rules.multiplayer.claimPenalty?.max ?? defaultRules.multiplayer?.claimPenalty?.max ?? 2))
-        }
+      enabled: rules.multiplayer.enabled ?? defaultRules.multiplayer?.enabled ?? false,
+      cardDistribution: rules.multiplayer.cardDistribution ?? defaultRules.multiplayer?.cardDistribution ?? 'shared',
+      claimEnabled: rules.multiplayer.claimEnabled ?? defaultRules.multiplayer?.claimEnabled ?? true,
+      claimWindowSeconds: Math.max(5, Math.floor(rules.multiplayer.claimWindowSeconds ?? defaultRules.multiplayer?.claimWindowSeconds ?? 10)),
+      wrongLockoutSeconds: Math.max(5, Math.floor(rules.multiplayer.wrongLockoutSeconds ?? defaultRules.multiplayer?.wrongLockoutSeconds ?? 10)),
+      claimPenalty: {
+        mode: 'leaderboardScaled' as const,
+        base: Math.max(0, Math.floor(rules.multiplayer.claimPenalty?.base ?? defaultRules.multiplayer?.claimPenalty?.base ?? 0)),
+        max: Math.max(0, Math.floor(rules.multiplayer.claimPenalty?.max ?? defaultRules.multiplayer?.claimPenalty?.max ?? 2))
       }
+    }
     : { ...(defaultRules.multiplayer ?? { enabled: false, cardDistribution: 'shared', claimEnabled: true, claimWindowSeconds: 10, wrongLockoutSeconds: 10, claimPenalty: { mode: 'leaderboardScaled', base: 0, max: 2 } }) };
   if (!ops.add || !ops.sub || !ops.mul || !ops.div) {
     console.warn('Base operations must remain enabled; restoring + - * /.');
@@ -606,6 +607,9 @@ async function start() {
     )
   };
 
+  // Power Cards statements
+  const powerStmts = preparePowerCardsStatements(db);
+
   const missingNormalized = db.prepare(
     `SELECT id, display_name FROM players WHERE display_name_normalized IS NULL OR display_name_normalized = ''`
   ).all() as Array<{ id: string; display_name: string }>;
@@ -722,6 +726,7 @@ async function start() {
       startedAt: string;
       expiresAt: string;
     };
+    frozenUntilRound?: number;
   };
   type RevealState = {
     enabled: boolean;
@@ -1300,8 +1305,36 @@ async function start() {
         shapeConstraint: rules.shapeConstraint ?? null,
         coldStartRemaining: rules.coldStartSeconds ? coldStartRemaining : null,
         reveal: revealState
-      }
-    };
+      },
+      powerCards: rules.powerCards?.enabled ? {
+        enabled: true,
+        activeEffects: {
+          lockedOps: metadata.restrictedOps,
+          frozenUntilRound: metadata.frozenUntilRound,
+          playerEffects: (() => {
+            // Calculate player effects from held powers
+            const effects: Record<string, { shieldActive?: boolean; doubleActive?: boolean; swapIndices?: [number, number] | null }> = {};
+            const allPowers = getSessionInventories(powerStmts, session.id);
+            for (const [pId, powers] of allPowers.entries()) {
+              const pEffects: any = {};
+              const shield = powers.find(p => p.power_type === 'shield' && p.state_json && JSON.parse(p.state_json).activated);
+              if (shield) pEffects.shieldActive = true;
+
+              const double = powers.find(p => p.power_type === 'double' && p.state_json && JSON.parse(p.state_json).activated);
+              if (double) pEffects.doubleActive = true;
+
+              const swap = powers.find(p => p.power_type === 'swap' && p.state_json && JSON.parse(p.state_json).activated);
+              if (swap) pEffects.swapIndices = JSON.parse(swap.state_json!).swapIndices;
+
+              if (Object.keys(pEffects).length > 0) {
+                effects[pId] = pEffects;
+              }
+            }
+            return effects;
+          })()
+        }
+      } : { enabled: false }
+    } as any;
   };
 
   const createRoundForSession = (
@@ -1480,6 +1513,13 @@ async function start() {
     }
     const player = playerId ? (statements.getPlayerById.get(playerId) as Player | undefined) : undefined;
     const lockoutRemaining = playerId ? getLockoutRemaining(sessionId, playerId) : 0;
+
+    // Get player's power card inventory if power cards are enabled
+    let playerPowerCards = null;
+    if (rules.powerCards?.enabled && playerId) {
+      playerPowerCards = getPlayerInventory(powerStmts, sessionId, playerId);
+    }
+
     return {
       session: {
         ...session,
@@ -1488,6 +1528,7 @@ async function start() {
       },
       player: player ?? null,
       lockoutRemaining,
+      powerCards: playerPowerCards,
       ...active
     };
   };
@@ -1536,57 +1577,57 @@ async function start() {
 
     if (claimRequired) {
       if (!metadata.claim) {
-      return {
-        result: { correct: false, error_code: 'CLAIM_REQUIRED' },
-        round: active.round,
-        card: active.card,
-        leaderboard: statements.leaderboard.all(session.id),
-        skipEnabled: active.skipEnabled,
-        skipsRemaining: active.skipsRemaining,
-        skipPenaltySummary: active.skipPenaltySummary,
-        claim: metadata.claim ? active.claim : null,
-        multiplayer: active.multiplayer,
-        timeout: active.timeout,
-        timer: active.timer,
-        hints: active.hints,
-        activeRules: active.activeRules
-      };
+        return {
+          result: { correct: false, error_code: 'CLAIM_REQUIRED' },
+          round: active.round,
+          card: active.card,
+          leaderboard: statements.leaderboard.all(session.id),
+          skipEnabled: active.skipEnabled,
+          skipsRemaining: active.skipsRemaining,
+          skipPenaltySummary: active.skipPenaltySummary,
+          claim: metadata.claim ? active.claim : null,
+          multiplayer: active.multiplayer,
+          timeout: active.timeout,
+          timer: active.timer,
+          hints: active.hints,
+          activeRules: active.activeRules
+        };
       }
       if (metadata.claim.playerId !== playerId) {
         const remainingSeconds = getClaimRemainingSeconds(metadata.claim);
-      return {
-        result: { correct: false, error_code: 'CLAIM_ACTIVE', remainingSeconds },
-        round: active.round,
-        card: active.card,
-        leaderboard: statements.leaderboard.all(session.id),
-        skipEnabled: active.skipEnabled,
-        skipsRemaining: active.skipsRemaining,
-        skipPenaltySummary: active.skipPenaltySummary,
-        claim: metadata.claim ? active.claim : null,
-        multiplayer: active.multiplayer,
-        timeout: active.timeout,
-        timer: active.timer,
-        hints: active.hints,
-        activeRules: active.activeRules
-      };
+        return {
+          result: { correct: false, error_code: 'CLAIM_ACTIVE', remainingSeconds },
+          round: active.round,
+          card: active.card,
+          leaderboard: statements.leaderboard.all(session.id),
+          skipEnabled: active.skipEnabled,
+          skipsRemaining: active.skipsRemaining,
+          skipPenaltySummary: active.skipPenaltySummary,
+          claim: metadata.claim ? active.claim : null,
+          multiplayer: active.multiplayer,
+          timeout: active.timeout,
+          timer: active.timer,
+          hints: active.hints,
+          activeRules: active.activeRules
+        };
       }
       if (getClaimRemainingSeconds(metadata.claim) <= 0) {
         clearClaim();
-      return {
-        result: { correct: false, error_code: 'CLAIM_EXPIRED' },
-        round: active.round,
-        card: active.card,
-        leaderboard: statements.leaderboard.all(session.id),
-        skipEnabled: active.skipEnabled,
-        skipsRemaining: active.skipsRemaining,
-        skipPenaltySummary: active.skipPenaltySummary,
-        claim: metadata.claim ? active.claim : null,
-        multiplayer: active.multiplayer,
-        timeout: active.timeout,
-        timer: active.timer,
-        hints: active.hints,
-        activeRules: active.activeRules
-      };
+        return {
+          result: { correct: false, error_code: 'CLAIM_EXPIRED' },
+          round: active.round,
+          card: active.card,
+          leaderboard: statements.leaderboard.all(session.id),
+          skipEnabled: active.skipEnabled,
+          skipsRemaining: active.skipsRemaining,
+          skipPenaltySummary: active.skipPenaltySummary,
+          claim: metadata.claim ? active.claim : null,
+          multiplayer: active.multiplayer,
+          timeout: active.timeout,
+          timer: active.timer,
+          hints: active.hints,
+          activeRules: active.activeRules
+        };
       }
     }
 
@@ -1647,21 +1688,21 @@ async function start() {
           approval_status: 'approved',
           created_at: nowIso()
         });
-      return {
-        result: { correct: false, error_code: 'PLAYER_LOCKED_OUT', remainingSeconds },
-        round: active.round,
-        card: active.card,
-        leaderboard: statements.leaderboard.all(session.id),
-        skipEnabled: active.skipEnabled,
-        skipsRemaining: active.skipsRemaining,
-        skipPenaltySummary: active.skipPenaltySummary,
-        claim: metadata.claim ? active.claim : null,
-        multiplayer: active.multiplayer,
-        timeout: active.timeout,
-        timer: active.timer,
-        hints: active.hints,
-        activeRules: active.activeRules
-      };
+        return {
+          result: { correct: false, error_code: 'PLAYER_LOCKED_OUT', remainingSeconds },
+          round: active.round,
+          card: active.card,
+          leaderboard: statements.leaderboard.all(session.id),
+          skipEnabled: active.skipEnabled,
+          skipsRemaining: active.skipsRemaining,
+          skipPenaltySummary: active.skipPenaltySummary,
+          claim: metadata.claim ? active.claim : null,
+          multiplayer: active.multiplayer,
+          timeout: active.timeout,
+          timer: active.timer,
+          hints: active.hints,
+          activeRules: active.activeRules
+        };
       }
       statements.clearPlayerLockout.run(session.id, playerId);
     }
@@ -1786,6 +1827,17 @@ async function start() {
     transaction();
     if (claimRequired && metadata.claim?.playerId === playerId) {
       clearClaim();
+    }
+
+    // Award power card on correct solve if power cards are enabled
+    if (rules.powerCards?.enabled) {
+      const config = normalizePowerCardsConfig(rules.powerCards);
+      if (config.awardRule === 'onSolve') {
+        const awarded = awardPower(powerStmts, session.id, playerId, active.card.dot_tier, config, Math.random);
+        if (awarded.awarded) {
+          console.log(`Awarded power card ${awarded.power.power_type} to player ${playerId}`);
+        }
+      }
     }
 
     createRoundForSession(session.id, rules, {
@@ -2427,41 +2479,43 @@ async function start() {
     reply.send({ filename, path: exportPath });
   });
 
-  fastify.post<{ Body: {
-    title: string;
-    difficulty_mode: 'mixed' | 'fixed';
-    fixed_tier?: 1 | 2 | 3 | 4;
-    scoring?: SessionRules['scoring'];
-    ops?: SessionRules['ops'];
-    timer_mode?: SessionRules['timer_mode'];
-    countdown_seconds?: number;
-    hints_enabled?: boolean;
-    hint1_after_seconds?: number;
-    hint2_after_seconds?: number;
-    lan_enabled?: boolean;
-    lan_auto_accept?: boolean;
-    no_undo_input?: boolean;
-    scarcityEnabled?: boolean;
-    scarcityMode?: 'banOneOp';
-    scarcityBanSet?: { add?: boolean; sub?: boolean; mul?: boolean; div?: boolean };
-    shapeConstraint?: 'shapeA' | 'shapeB' | null;
-    mistakePenalty?: SessionRules['mistakePenalty'];
-    coldStartSeconds?: number;
-    blindReveal?: SessionRules['blindReveal'];
-    uniquenessBonusPoints?: number;
-    skip?: SessionRules['skip'];
-    multiplayer?: SessionRules['multiplayer'];
-  } }>(
+  fastify.post<{
+    Body: {
+      title: string;
+      difficulty_mode: 'mixed' | 'fixed';
+      fixed_tier?: 1 | 2 | 3 | 4;
+      scoring?: SessionRules['scoring'];
+      ops?: SessionRules['ops'];
+      timer_mode?: SessionRules['timer_mode'];
+      countdown_seconds?: number;
+      hints_enabled?: boolean;
+      hint1_after_seconds?: number;
+      hint2_after_seconds?: number;
+      lan_enabled?: boolean;
+      lan_auto_accept?: boolean;
+      no_undo_input?: boolean;
+      scarcityEnabled?: boolean;
+      scarcityMode?: 'banOneOp';
+      scarcityBanSet?: { add?: boolean; sub?: boolean; mul?: boolean; div?: boolean };
+      shapeConstraint?: 'shapeA' | 'shapeB' | null;
+      mistakePenalty?: SessionRules['mistakePenalty'];
+      coldStartSeconds?: number;
+      blindReveal?: SessionRules['blindReveal'];
+      uniquenessBonusPoints?: number;
+      skip?: SessionRules['skip'];
+      multiplayer?: SessionRules['multiplayer'];
+    }
+  }>(
     '/api/sessions',
     async (request, reply) => {
-    const {
-      title,
-      difficulty_mode,
-      fixed_tier,
-      scoring,
-      ops,
-      timer_mode,
-      countdown_seconds,
+      const {
+        title,
+        difficulty_mode,
+        fixed_tier,
+        scoring,
+        ops,
+        timer_mode,
+        countdown_seconds,
         hints_enabled,
         hint1_after_seconds,
         hint2_after_seconds,
@@ -2839,18 +2893,18 @@ async function start() {
   fastify.get<{ Params: { id: string }; Querystring: { playerId?: string } }>(
     '/api/sessions/:id/active-round',
     async (request, reply) => {
-    const playerId = request.query?.playerId?.trim() || null;
-    if (playerId && !hasHostToken(request)) {
-      reply.status(403).send({ error: 'Host token required for player views.' });
-      return;
-    }
-    const active = buildActiveRoundResponse(request.params.id, playerId);
-    if (!active) {
-      reply.status(404).send({ error: 'No active round.' });
-      return;
-    }
-    reply.send(stripRoundMetadata(active));
-  });
+      const playerId = request.query?.playerId?.trim() || null;
+      if (playerId && !hasHostToken(request)) {
+        reply.status(403).send({ error: 'Host token required for player views.' });
+        return;
+      }
+      const active = buildActiveRoundResponse(request.params.id, playerId);
+      if (!active) {
+        reply.status(404).send({ error: 'No active round.' });
+        return;
+      }
+      reply.send(stripRoundMetadata(active));
+    });
 
   fastify.get<{ Params: { id: string } }>('/api/sessions/:id/projector', async (request, reply) => {
     const active = buildActiveRoundResponse(request.params.id);
@@ -2947,6 +3001,99 @@ async function start() {
       });
       broadcastSessionState(session.id);
       reply.send(stripRoundMetadata(response));
+    }
+  );
+
+  fastify.post<{
+    Params: { id: string; powerId: string };
+    Body: { targetPlayerId?: string; targetOp?: string; swapIndices?: [number, number] };
+  }>(
+    '/api/sessions/:id/powers/:powerId/activate',
+    async (request, reply) => {
+      const { id: sessionId, powerId } = request.params;
+      const { targetPlayerId, targetOp } = request.body;
+      const clientToken = request.headers['x-client-token'] as string | undefined;
+
+      const session = statements.getSession.get(sessionId) as Session | undefined;
+      if (!session) {
+        reply.status(404).send({ error: 'Session not found.' });
+        return;
+      }
+
+      let playerId: string | null = null;
+      if (clientToken) {
+        const sessionClient = statements.getSessionClient.get(clientToken) as
+          | { session_id: string; player_id: string }
+          | undefined;
+        if (sessionClient && sessionClient.session_id === sessionId) {
+          playerId = sessionClient.player_id;
+        }
+      }
+
+      if (!playerId) {
+        reply.status(403).send({ error: 'Valid player token required to activate powers.' });
+        return;
+      }
+
+      const rules = parseRules(session.rules_json);
+      if (!rules.powerCards?.enabled) {
+        reply.status(400).send({ error: 'Power cards are disabled for this session.' });
+        return;
+      }
+
+      const config = normalizePowerCardsConfig(rules.powerCards);
+      const active = buildActiveRoundResponse(sessionId, playerId);
+      if (!active) {
+        reply.status(400).send({ error: 'No active round.' });
+        return;
+      }
+      const currentRoundNumber = (statements.countRounds.get(sessionId) as { count: number }).count;
+      const leaderboard = statements.leaderboard.all(sessionId) as LeaderboardRow[];
+
+      const context: PowerActivationContext = {
+        statements: powerStmts,
+        sessionId,
+        playerId,
+        powerId,
+        config,
+        leaderboard,
+        currentRoundNumber,
+        payload: {
+          targetPlayerId: targetPlayerId,
+          targetOp: targetOp as any,
+          swapIndices: request.body.swapIndices
+        },
+        onRerollRound: () => {
+          statements.markRoundSkipped.run(nowIso(), playerId, 'reroll', active!.round.id);
+          createRoundForSession(sessionId, rules, {
+            ownerPlayerId: active.round.solved_by_player_id
+          });
+        },
+        onLockedOpSet: (op: 'add' | 'sub' | 'mul' | 'div', _roundId: string) => {
+          const metadata = JSON.parse(active!.round.metadata_json || '{}');
+          const restricted = metadata.restrictedOps || [];
+          if (!restricted.includes(op)) {
+            restricted.push(op);
+          }
+          metadata.restrictedOps = restricted;
+          statements.updateRoundMetadata.run(JSON.stringify(metadata), active!.round.id);
+        },
+        onFreezeSet: (untilRound: number) => {
+          const metadata = JSON.parse(active!.round.metadata_json || '{}');
+          metadata.frozenUntilRound = untilRound;
+          statements.updateRoundMetadata.run(JSON.stringify(metadata), active!.round.id);
+        }
+      };
+
+      const result = activatePower(context);
+
+      if (!result.ok) {
+        reply.status(400).send({ error: (result as any).error });
+        return;
+      }
+
+      broadcastSessionState(sessionId);
+      reply.send({ ok: true, result });
     }
   );
 
@@ -3051,14 +3198,14 @@ async function start() {
       }
       const attempt = db.prepare('SELECT * FROM attempts WHERE id = ?').get(request.params.attemptId) as
         | {
-            id: string;
-            round_id: string;
-            player_id: string;
-            is_correct: number;
-            error_code: string;
-            approval_status: string;
-            expression_raw: string;
-          }
+          id: string;
+          round_id: string;
+          player_id: string;
+          is_correct: number;
+          error_code: string;
+          approval_status: string;
+          expression_raw: string;
+        }
         | undefined;
       if (!attempt || attempt.approval_status !== 'pending') {
         reply.status(404).send({ error: 'Pending attempt not found.' });

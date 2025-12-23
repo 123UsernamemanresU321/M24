@@ -1,6 +1,24 @@
 export type SessionStatus = 'setup' | 'live' | 'finished';
 export type RoundStatus = 'active' | 'solved' | 'skipped';
 
+export type PowerCardType = 'shield' | 'double' | 'swap' | 'reroll' | 'freeze' | 'steal' | 'lockOp';
+
+export type PowerCard = {
+  id: string;
+  session_id: string;
+  player_id: string;
+  power_type: PowerCardType;
+  acquired_at: string;
+  consumed_at: string | null;
+  state_json: string | null;
+};
+
+export type PlayerPowerEffects = {
+  shieldActive?: boolean;
+  doubleActive?: boolean;
+  swapIndices?: [number, number] | null;
+};
+
 export type Player = {
   id: string;
   display_name: string;
@@ -73,6 +91,25 @@ export type SessionRules = {
       base?: number;
       max?: number;
     };
+  };
+  powerCards?: {
+    enabled?: boolean;
+    dropRateByTier?: Record<'1' | '2' | '3' | '4', number>;
+    maxHeld?: number;
+    awardRule?: 'roundStart' | 'onSolve';
+    allowed?: {
+      shield?: boolean;
+      double?: boolean;
+      swap?: boolean;
+      reroll?: boolean;
+      freeze?: boolean;
+      steal?: boolean;
+      lockOp?: boolean;
+    };
+    stealPoints?: number;
+    freezeRounds?: 1 | 2;
+    lockOpDurationRounds?: number;
+    rerollAuthority?: 'hostOnly' | 'playerWithHostApprove';
   };
 };
 
@@ -195,5 +232,14 @@ export type ActiveRoundResponse = {
     hint2?: string | null;
     hint1_revealed_at?: string | null;
     hint2_revealed_at?: string | null;
+  };
+  powerCards?: {
+    enabled: boolean;
+    inventory?: PowerCard[];
+    activeEffects?: {
+      lockedOps?: Array<'add' | 'sub' | 'mul' | 'div'>;
+      frozenUntilRound?: number;
+      playerEffects?: Record<string, PlayerPowerEffects>;
+    };
   };
 };
