@@ -236,8 +236,9 @@ export default function PlayerSubmit() {
             {card ? (
               <>
                 <CardView numbers={displayNumbers} tier={card.dot_tier} />
-                {(bannedOpsLabel || shapeLabel || coldStartRemaining !== null || activeRules?.reveal?.enabled) && (
+                {(bannedOpsLabel || shapeLabel || coldStartRemaining !== null || activeRules?.reveal?.enabled || state?.activeRules?.swapped) && (
                   <div className="chip-row">
+                    {state?.activeRules?.swapped && <span className="chip info">⇄ Card Swapped</span>}
                     {bannedOpsLabel && <span className="chip warning">Restricted: {bannedOpsLabel}</span>}
                     {shapeLabel && <span className="chip">Shape: {shapeLabel}</span>}
                     {coldStartRemaining !== null && <span className="chip">Submissions open in {coldStartRemaining}s</span>}
@@ -266,13 +267,16 @@ export default function PlayerSubmit() {
               </div>
             )}
             {/* Power Cards Inventory */}
-            {state?.powerCards?.enabled && (
+            {state?.powerCards?.enabled && playerId && (
               <div style={{ margin: '12px 0' }}>
                 {(state.powerCards.inventory && state.powerCards.inventory.length > 0) ? (
                   <PowerInventory
                     inventory={state.powerCards.inventory}
                     onActivate={handleActivatePower}
-                    disabled={activating || !canInteract}
+                    disabled={activating || !joined}
+                    leaderboard={leaderboard}
+                    displayNumbers={displayNumbers}
+                    currentPlayerId={playerId}
                   />
                 ) : (
                   <div style={{ fontSize: '13px', color: '#999', padding: '8px', border: '1px dashed #ccc', borderRadius: '8px', textAlign: 'center' }}>
@@ -325,6 +329,7 @@ export default function PlayerSubmit() {
               onToggle={() => setLeaderboardOpen(!leaderboardOpen)}
               rows={leaderboard}
               highlightPlayerId={playerId ?? undefined}
+              isFrozen={state?.activeRules?.frozen}
             />
           </>
         )}

@@ -1373,52 +1373,58 @@ button:disabled,
 }
 
 /* Power Card Notification */
+/* Power Card Notification - Non-blocking Toast */
 .power-notification-overlay {
   position: fixed;
-  inset: 0;
+  top: 20px;
+  right: 20px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.4);
-  z-index: 100;
-  backdrop-filter: blur(2px);
-  animation: fadeIn 0.3s ease-out;
+  align-items: flex-start;
+  justify-content: flex-end;
+  z-index: 1000;
+  pointer-events: none;
 }
 
 .power-notification-card {
-  background: white;
-  padding: 32px;
-  border-radius: 24px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-  text-align: center;
-  animation: popUp 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  min-width: 240px;
+  background: rgba(255, 255, 255, 0.95);
+  padding: 12px 20px;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  animation: slideInRight 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(120%);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
 
 .power-icon-large {
-  font-size: 64px;
-  margin-bottom: 16px;
-  animation: spinWiggle 1s ease-in-out infinite;
+  font-size: 24px;
 }
 
 .power-title {
-  font-size: 14px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: #666;
-  font-weight: 700;
-  margin-bottom: 4px;
+  display: none;
 }
 
 .power-name {
-  font-size: 24px;
-  font-weight: 800;
-  color: #2c3e50;
-  background: linear-gradient(135deg, #6c63ff, #ff6584);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  font-size: 14px;
+  font-weight: 700;
+  color: #333;
 }
+
 
 @keyframes popUp {
   0% {

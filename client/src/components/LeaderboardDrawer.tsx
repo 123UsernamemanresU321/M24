@@ -7,9 +7,10 @@ type LeaderboardDrawerProps = {
     onToggle: () => void;
     rows: LeaderboardRow[];
     highlightPlayerId?: string;
+    isFrozen?: boolean;
 };
 
-export default function LeaderboardDrawer({ open, onToggle, rows, highlightPlayerId }: LeaderboardDrawerProps) {
+export default function LeaderboardDrawer({ open, onToggle, rows, highlightPlayerId, isFrozen }: LeaderboardDrawerProps) {
     // Top 3 for mini view
     const top3 = rows.slice(0, 3);
 
@@ -18,7 +19,7 @@ export default function LeaderboardDrawer({ open, onToggle, rows, highlightPlaye
             <div className={`leaderboard-drawer ${open ? 'open' : ''}`}>
                 <div className="leaderboard-drawer-header" onClick={onToggle}>
                     <div className="leaderboard-drawer-title">
-                        Leaderboard {open ? '▼' : '▲'}
+                        Leaderboard {isFrozen && '❄️'} {open ? '▼' : '▲'}
                     </div>
                     {!open && top3.length > 0 && (
                         <div className="mini-leaderboard">

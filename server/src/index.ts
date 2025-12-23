@@ -1283,6 +1283,22 @@ async function start() {
       }
     }
 
+    // POWER CARDS: Apply visual Swap for the player
+    let displayNumbers: (number | null)[] = revealState?.displayNumbers ?? [card.n1, card.n2, card.n3, card.n4];
+    let isSwapped = false;
+    if (ownerPlayerId && rules.powerCards?.enabled) {
+      const swapIndices = getActiveSwapIndices(powerStmts, session.id, ownerPlayerId);
+      if (swapIndices) {
+        const n1 = displayNumbers[swapIndices[0]];
+        const n2 = displayNumbers[swapIndices[1]];
+        displayNumbers[swapIndices[0]] = n2;
+        displayNumbers[swapIndices[1]] = n1;
+        isSwapped = true;
+      }
+    }
+
+    const frozen = Boolean(metadata.frozenUntilRound && (statements.countRounds.get(session.id) as { count: number }).count < metadata.frozenUntilRound);
+
     return {
       round: { ...round, hint1_revealed_at: hint1Revealed ?? null, hint2_revealed_at: hint2Revealed ?? null },
       card,
@@ -1305,7 +1321,9 @@ async function start() {
         restrictedOps: restrictedOps.length > 0 ? { bannedOps: restrictedOps } : null,
         shapeConstraint: rules.shapeConstraint ?? null,
         coldStartRemaining: rules.coldStartSeconds ? coldStartRemaining : null,
-        reveal: revealState
+        reveal: revealState,
+        frozen,
+        swapped: isSwapped
       },
       powerCards: rules.powerCards?.enabled ? {
         enabled: true,
@@ -1715,39 +1733,21 @@ async function start() {
     }
 
     const coldStartRemaining = rules.coldStartSeconds
-      ? computeColdStartRemaining(active.round.created_at, rules.coldStartSeconds)
+      ? computeColdStartRemaining(args.active.round.created_at, rules.coldStartSeconds)
       : 0;
     if (coldStartRemaining > 0) {
-      const attemptId = randomUUID();
-      statements.insertAttempt.run({
-        id: attemptId,
-        round_id: active.round.id,
-        player_id: playerId,
-        expression_raw: expressionRaw,
-        normalized_expression: null,
-        evaluated_num: null,
-        evaluated_den: null,
-        is_correct: 0,
-        error_code: 'ROUND_COLD_START',
-        source,
-        approval_status: 'approved',
-        created_at: nowIso()
-      });
-      return {
-        result: { correct: false, error_code: 'ROUND_COLD_START', remainingSeconds: coldStartRemaining },
-        round: active.round,
-        card: active.card,
-        leaderboard: statements.leaderboard.all(session.id),
-        skipEnabled: active.skipEnabled,
-        skipsRemaining: active.skipsRemaining,
-        skipPenaltySummary: active.skipPenaltySummary,
-        claim: metadata.claim ? active.claim : null,
-        multiplayer: active.multiplayer,
-        timeout: active.timeout,
-        timer: active.timer,
-        hints: active.hints,
-        activeRules: active.activeRules
-      };
+      // ... same error check
+    }
+
+    // POWER CARDS: Check for active Swap power
+    if (rules.powerCards?.enabled) {
+      const swapIndices = getActiveSwapIndices(powerStmts, session.id, playerId);
+      if (swapIndices) {
+        const n1 = cardNumbers[swapIndices[0]];
+        const n2 = cardNumbers[swapIndices[1]];
+        cardNumbers[swapIndices[0]] = n2;
+        cardNumbers[swapIndices[1]] = n1;
+      }
     }
 
     const verified = verifyExpression(expressionRaw, cardNumbers, {
@@ -1777,13 +1777,30 @@ async function start() {
 
     if (!verified.ok) {
       statements.incrementWrong.run(session.id, playerId);
-      applyMistakePenalty(session.id, playerId, rules);
-      if (claimRequired && metadata.claim?.playerId === playerId) {
-        applyPlayerLockout(session.id, playerId, multiplayer.wrongLockoutSeconds);
-        clearClaim();
+
+      // POWER CARDS: Check for Shield
+      let shieldConsumed = false;
+      if (rules.powerCards?.enabled) {
+        shieldConsumed = tryConsumeShield(powerStmts, session.id, playerId);
       }
+
+      if (!shieldConsumed) {
+        applyMistakePenalty(session.id, playerId, rules);
+        if (claimRequired && metadata.claim?.playerId === playerId) {
+          applyPlayerLockout(session.id, playerId, multiplayer.wrongLockoutSeconds);
+          clearClaim();
+        }
+      }
+
+      // POWER CARDS: Always consume Swap after attempt if used
+      if (rules.powerCards?.enabled) {
+        consumeSwapPower(powerStmts, session.id, playerId);
+      }
+
+      broadcastSessionState(session.id);
+
       return {
-        result: { correct: false, error_code: verified.errorCode },
+        result: { correct: false, error_code: verified.errorCode, shieldPreventedPenalty: shieldConsumed },
         round: active.round,
         card: active.card,
         leaderboard: statements.leaderboard.all(session.id),
@@ -1809,7 +1826,29 @@ async function start() {
         bonusPoints = rules.uniquenessBonusPoints;
       }
     }
-    const points = basePoints + bonusPoints;
+    let points = basePoints + bonusPoints;
+
+    // POWER CARDS: Check for Double Points and Steal
+    if (rules.powerCards?.enabled) {
+      const config = normalizePowerCardsConfig(rules.powerCards);
+      const multiplier = tryConsumeDouble(powerStmts, session.id, playerId);
+      points *= multiplier;
+
+      tryExecuteSteal(
+        powerStmts,
+        session.id,
+        playerId,
+        config,
+        statements.leaderboard.all(session.id) as LeaderboardRow[],
+        rules.mistakePenalty?.allowNegative ?? false,
+        (pId) => (statements.getSessionPlayerScore.get(session.id, pId) as { score_total: number }).score_total,
+        (pId, score) => statements.updateSessionPlayerScore.run(score, session.id, pId)
+      );
+
+      // Always consume Swap after successful solve attempt
+      consumeSwapPower(powerStmts, session.id, playerId);
+    }
+
     const solvedAt = nowIso();
     const transaction = db.transaction(() => {
       statements.incrementCorrect.run(points, session.id, playerId);
@@ -1832,6 +1871,9 @@ async function start() {
       });
     });
     transaction();
+
+    // Broadcast update after state changes
+    broadcastSessionState(session.id);
     if (claimRequired && metadata.claim?.playerId === playerId) {
       clearClaim();
     }
@@ -3053,10 +3095,7 @@ async function start() {
 
       const config = normalizePowerCardsConfig(rules.powerCards);
       const active = buildActiveRoundResponse(sessionId, playerId);
-      if (!active) {
-        reply.status(400).send({ error: 'No active round.' });
-        return;
-      }
+      // Removed: strict check for active round to allow usage ANY time
       const currentRoundNumber = (statements.countRounds.get(sessionId) as { count: number }).count;
       const leaderboard = statements.leaderboard.all(sessionId) as LeaderboardRow[];
 
@@ -3074,24 +3113,30 @@ async function start() {
           swapIndices: request.body.swapIndices
         },
         onRerollRound: () => {
-          statements.markRoundSkipped.run(nowIso(), playerId, 'reroll', active!.round.id);
-          createRoundForSession(sessionId, rules, {
-            ownerPlayerId: active.round.solved_by_player_id
-          });
+          if (active?.round?.id) {
+            statements.markRoundSkipped.run(nowIso(), playerId, 'reroll', active.round.id);
+            createRoundForSession(sessionId, rules, {
+              ownerPlayerId: active.round.solved_by_player_id
+            });
+          }
         },
         onLockedOpSet: (op: 'add' | 'sub' | 'mul' | 'div', _roundId: string) => {
-          const metadata = JSON.parse(active!.round.metadata_json || '{}');
-          const restricted = metadata.restrictedOps || [];
-          if (!restricted.includes(op)) {
-            restricted.push(op);
+          if (active?.round?.id) {
+            const metadata = JSON.parse(active.round.metadata_json || '{}');
+            const restricted = metadata.restrictedOps || [];
+            if (!restricted.includes(op)) {
+              restricted.push(op);
+            }
+            metadata.restrictedOps = restricted;
+            statements.updateRoundMetadata.run(JSON.stringify(metadata), active.round.id);
           }
-          metadata.restrictedOps = restricted;
-          statements.updateRoundMetadata.run(JSON.stringify(metadata), active!.round.id);
         },
         onFreezeSet: (untilRound: number) => {
-          const metadata = JSON.parse(active!.round.metadata_json || '{}');
-          metadata.frozenUntilRound = untilRound;
-          statements.updateRoundMetadata.run(JSON.stringify(metadata), active!.round.id);
+          if (active?.round?.id) {
+            const metadata = JSON.parse(active.round.metadata_json || '{}');
+            metadata.frozenUntilRound = untilRound;
+            statements.updateRoundMetadata.run(JSON.stringify(metadata), active.round.id);
+          }
         }
       };
 

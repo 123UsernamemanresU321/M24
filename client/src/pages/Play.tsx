@@ -4,6 +4,7 @@ import { activatePower, claimRound, getSessionState, submitAttempt, type ClientS
 import CardView from '../components/CardView';
 import ExpressionBuilder from '../components/ExpressionBuilder';
 import PowerInventory from '../components/PowerInventory';
+import PowerNotification from '../components/PowerNotification';
 import LeaderboardDrawer from '../components/LeaderboardDrawer';
 import LeaderboardTable from '../components/LeaderboardTable';
 import { useDeviceProfile } from '../utils/useDeviceProfile';
@@ -68,6 +69,8 @@ export default function Play() {
 
   const clientToken = id ? getClientToken(id) : null;
   const [activating, setActivating] = useState(false);
+  const [newPower, setNewPower] = useState<string | null>(null);
+  const [prevInventorySize, setPrevInventorySize] = useState(0);
 
   const handleActivatePower = async (powerId: string, payload: any) => {
     if (!id || !clientToken) return;
@@ -88,6 +91,18 @@ export default function Play() {
     const interval = setInterval(() => setTick((prev) => prev + 1), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Hype detection for new power cards
+  useEffect(() => {
+    const currentInventory = state?.powerCards?.inventory ?? [];
+    if (currentInventory.length > prevInventorySize) {
+      const latest = currentInventory[currentInventory.length - 1];
+      if (latest) {
+        setNewPower(latest.power_type);
+      }
+    }
+    setPrevInventorySize(currentInventory.length);
+  }, [state?.powerCards?.inventory]);
 
   useEffect(() => {
     if (!id || !clientToken) {
@@ -293,8 +308,9 @@ export default function Play() {
         {state.card && (
           <>
             <CardView numbers={displayNumbers} tier={state.card.dot_tier} />
-            {(bannedOpsLabel || shapeLabel || coldStartRemaining) && (
+            {(bannedOpsLabel || shapeLabel || coldStartRemaining || state.activeRules?.swapped) && (
               <div className="chip-row">
+                {state.activeRules?.swapped && <span className="chip info">⇄ Card Swapped</span>}
                 {bannedOpsLabel && <span className="chip warning">Restricted: {bannedOpsLabel}</span>}
                 {shapeLabel && <span className="chip">Shape: {shapeLabel}</span>}
                 {coldStartRemaining ? <span className="chip">Submissions open in {coldStartRemaining}s</span> : null}
@@ -380,13 +396,26 @@ export default function Play() {
         {error && <div className="banner bad">{error}</div>}
 
         {/* Power Cards Inventory */}
-        {state.powerCards?.inventory && clientToken && (
-          <PowerInventory
-            inventory={state.powerCards.inventory}
-            onActivate={handleActivatePower}
-            disabled={!canSubmit || activating}
-          />
+        {state.powerCards?.enabled && (
+          <div style={{ margin: '12px 0' }}>
+            {state.powerCards.inventory && state.powerCards.inventory.length > 0 ? (
+              <PowerInventory
+                inventory={state.powerCards.inventory}
+                onActivate={handleActivatePower}
+                disabled={activating}
+                leaderboard={state.leaderboard}
+                displayNumbers={displayNumbers}
+                currentPlayerId={playerId ?? undefined}
+              />
+            ) : (
+              <div style={{ fontSize: '13px', color: '#999', padding: '8px', border: '1px dashed #ccc', borderRadius: '8px', textAlign: 'center' }}>
+                Power Slots Empty (Solve faster to get drops!)
+              </div>
+            )}
+          </div>
         )}
+
+        {newPower && <PowerNotification powerType={newPower} onClose={() => setNewPower(null)} />}
 
         {/* Leaderboard Section */}
         {!isMobileUI ? (
@@ -396,7 +425,7 @@ export default function Play() {
               style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
               onClick={() => setLeaderboardOpen(!leaderboardOpen)}
             >
-              Leaderboard {leaderboardOpen ? '▲' : '▼'}
+              Leaderboard {state.activeRules?.frozen && '❄️'} {leaderboardOpen ? '▲' : '▼'}
             </div>
             {leaderboardOpen && (
               <LeaderboardTable rows={state.leaderboard} highlightPlayerId={playerId ?? undefined} />
@@ -417,6 +446,7 @@ export default function Play() {
             onToggle={() => setLeaderboardOpen(!leaderboardOpen)}
             rows={state.leaderboard}
             highlightPlayerId={playerId ?? undefined}
+            isFrozen={state.activeRules?.frozen}
           />
         )}
 

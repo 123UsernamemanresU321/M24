@@ -11,6 +11,8 @@ export type ActiveRules = {
     displayNumbers: Array<number | null>;
     nextRevealSeconds?: number | null;
   } | null;
+  frozen?: boolean;
+  swapped?: boolean;
 };
 
 export type SkipInfo = {

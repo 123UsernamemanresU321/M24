@@ -29,7 +29,7 @@ interface PowerNotificationProps {
 export default function PowerNotification({ powerType, onClose }: PowerNotificationProps) {
     useEffect(() => {
         // Auto-dismiss after animation
-        const timer = setTimeout(onClose, 3000);
+        const timer = setTimeout(onClose, 2000);
         return () => clearTimeout(timer);
     }, [onClose]);
 

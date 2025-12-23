@@ -1,10 +1,14 @@
 import React, { useState } from 'react';
 import type { ClientState } from '../api';
+import type { LeaderboardRow } from '@arena/shared';
 
 type PowerInventoryProps = {
     inventory: NonNullable<NonNullable<ClientState['powerCards']>['inventory']>;
     onActivate: (powerId: string, payload: { targetPlayerId?: string; targetOp?: string; swapIndices?: [number, number] }) => Promise<void>;
     disabled?: boolean;
+    leaderboard?: LeaderboardRow[];
+    displayNumbers?: (number | null)[];
+    currentPlayerId?: string;
 };
 
 const POWER_ICONS: Record<string, string> = {
@@ -27,9 +31,11 @@ const POWER_DESCRIPTIONS: Record<string, string> = {
     steal: 'Steal points if you solve first.'
 };
 
-export default function PowerInventory({ inventory, onActivate, disabled }: PowerInventoryProps) {
+export default function PowerInventory({ inventory, onActivate, disabled, leaderboard = [], displayNumbers = [], currentPlayerId }: PowerInventoryProps) {
     const [selectedPowerId, setSelectedPowerId] = useState<string | null>(null);
     const [targetOp, setTargetOp] = useState<string>('');
+    const [targetPlayerId, setTargetPlayerId] = useState<string>('');
+    const [swapIndices, setSwapIndices] = useState<number[]>([]);
     const [isActivating, setIsActivating] = useState(false);
 
     const selectedPower = inventory.find((p) => p.id === selectedPowerId);
@@ -39,30 +45,47 @@ export default function PowerInventory({ inventory, onActivate, disabled }: Powe
         if (selectedPowerId === powerId) {
             setSelectedPowerId(null);
             setTargetOp('');
+            setTargetPlayerId('');
+            setSwapIndices([]);
         } else {
             setSelectedPowerId(powerId);
             setTargetOp('');
+            setTargetPlayerId('');
+            setSwapIndices([]);
         }
     };
 
     const handleActivate = async () => {
         if (!selectedPower || isActivating) return;
 
-        if (selectedPower.power_type === 'lockOp' && !targetOp) {
-            return;
-        }
+        if (selectedPower.power_type === 'lockOp' && !targetOp) return;
+        if (selectedPower.power_type === 'steal' && !targetPlayerId) return;
+        if (selectedPower.power_type === 'swap' && swapIndices.length !== 2) return;
 
         setIsActivating(true);
         try {
             await onActivate(selectedPower.id, {
-                targetOp: targetOp || undefined
+                targetOp: targetOp || undefined,
+                targetPlayerId: targetPlayerId || undefined,
+                swapIndices: swapIndices.length === 2 ? [swapIndices[0], swapIndices[1]] : undefined
             });
             setSelectedPowerId(null);
+            setTargetOp('');
+            setTargetPlayerId('');
+            setSwapIndices([]);
         } catch (err) {
             console.error('Failed to activate power:', err);
         } finally {
             setIsActivating(false);
         }
+    };
+
+    const handleToggleSwapIndex = (idx: number) => {
+        setSwapIndices(prev => {
+            if (prev.includes(idx)) return prev.filter(i => i !== idx);
+            if (prev.length >= 2) return [prev[1], idx];
+            return [...prev, idx];
+        });
     };
 
     if (inventory.length === 0) return null;
@@ -115,10 +138,52 @@ export default function PowerInventory({ inventory, onActivate, disabled }: Powe
                         </div>
                     )}
 
+                    {selectedPower.power_type === 'steal' && (
+                        <div className="player-selector" style={{ marginBottom: '12px' }}>
+                            <div style={{ fontSize: '11px', marginBottom: '4px' }}>Select player to steal from:</div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                {leaderboard.filter((p: any) => p.player_id !== currentPlayerId).map((p: any) => (
+                                    <button
+                                        key={p.player_id}
+                                        onClick={() => setTargetPlayerId(p.player_id)}
+                                        className={`button small ${targetPlayerId === p.player_id ? '' : 'ghost'}`}
+                                        style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+                                    >
+                                        {p.display_name} ({p.score_total} pts)
+                                    </button>
+                                ))}
+                                {leaderboard.length <= 1 && <div style={{ fontSize: '11px', color: '#999' }}>No other players to steal from!</div>}
+                            </div>
+                        </div>
+                    )}
+
+                    {selectedPower.power_type === 'swap' && (
+                        <div className="index-selector" style={{ marginBottom: '12px' }}>
+                            <div style={{ fontSize: '11px', marginBottom: '4px' }}>Select 2 positions to swap:</div>
+                            <div className="button-row">
+                                {[0, 1, 2, 3].map(idx => (
+                                    <button
+                                        key={idx}
+                                        onClick={() => handleToggleSwapIndex(idx)}
+                                        className={`button small ${swapIndices.includes(idx) ? '' : 'ghost'}`}
+                                        style={{ minWidth: '40px' }}
+                                    >
+                                        {displayNumbers[idx] ?? '?'}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     <button
                         className="button primary w-full"
                         onClick={handleActivate}
-                        disabled={isActivating || (selectedPower.power_type === 'lockOp' && !targetOp)}
+                        disabled={
+                            isActivating ||
+                            (selectedPower.power_type === 'lockOp' && !targetOp) ||
+                            (selectedPower.power_type === 'steal' && !targetPlayerId) ||
+                            (selectedPower.power_type === 'swap' && swapIndices.length !== 2)
+                        }
                         style={{ width: '100%' }}
                     >
                         {isActivating ? 'Activating...' : 'Activate Power'}
