@@ -1308,6 +1308,7 @@ async function start() {
       },
       powerCards: rules.powerCards?.enabled ? {
         enabled: true,
+        inventory: ownerPlayerId ? getPlayerInventory(powerStmts, session.id, ownerPlayerId) : [],
         activeEffects: {
           lockedOps: metadata.restrictedOps,
           frozenUntilRound: metadata.frozenUntilRound,
@@ -3385,12 +3386,20 @@ async function start() {
       player = resolvePlayerForName(display_name);
       statements.insertSessionPlayer.run({ session_id: session.id, player_id: player.id, created_at: nowIso() });
     }
+    const client_token = generateToken();
+    statements.insertSessionClient.run({
+      token: client_token,
+      session_id: session.id,
+      player_id: player ? player.id : 'anonymous', // Should ideally be player.id, but handles potential null if logic changes
+      created_at: nowIso()
+    });
     reply.send({
       session_id: session.id,
       session_title: session.title,
       join_code: session.join_code,
       lan_auto_accept: rules.lan_auto_accept,
-      player
+      player,
+      client_token
     });
   });
 

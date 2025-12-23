@@ -4,6 +4,7 @@ import { activatePower, claimRound, getSessionState, submitAttempt, type ClientS
 import CardView from '../components/CardView';
 import ExpressionBuilder from '../components/ExpressionBuilder';
 import PowerInventory from '../components/PowerInventory';
+import LeaderboardDrawer from '../components/LeaderboardDrawer';
 import LeaderboardTable from '../components/LeaderboardTable';
 import { useDeviceProfile } from '../utils/useDeviceProfile';
 import { clearPlayerAuth, getClientToken, getPlayerName } from '../utils/tokens';
@@ -388,27 +389,36 @@ export default function Play() {
         )}
 
         {/* Leaderboard Section */}
-        <div className="panel" style={{ marginTop: '16px' }}>
-          <div
-            className="section-title"
-            style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-            onClick={() => setLeaderboardOpen(!leaderboardOpen)}
-          >
-            Leaderboard {leaderboardOpen ? '▲' : '▼'}
-          </div>
-          {leaderboardOpen && (
-            <LeaderboardTable rows={state.leaderboard} highlightPlayerId={playerId ?? undefined} />
-          )}
-          {!leaderboardOpen && state.leaderboard.length > 0 && (
-            <div className="mini-leaderboard">
-              {state.leaderboard.slice(0, 3).map((row, idx) => (
-                <span key={row.player_id} className={idx === 0 ? 'mini-leader' : ''}>
-                  {idx + 1}. {row.display_name}: {row.score_total}
-                </span>
-              ))}
+        {!isMobileUI ? (
+          <div className="panel" style={{ marginTop: '16px' }}>
+            <div
+              className="section-title"
+              style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+              onClick={() => setLeaderboardOpen(!leaderboardOpen)}
+            >
+              Leaderboard {leaderboardOpen ? '▲' : '▼'}
             </div>
-          )}
-        </div>
+            {leaderboardOpen && (
+              <LeaderboardTable rows={state.leaderboard} highlightPlayerId={playerId ?? undefined} />
+            )}
+            {!leaderboardOpen && state.leaderboard.length > 0 && (
+              <div className="mini-leaderboard">
+                {state.leaderboard.slice(0, 3).map((row, idx) => (
+                  <span key={row.player_id} className={idx === 0 ? 'mini-leader' : ''}>
+                    {idx + 1}. {row.display_name}: {row.score_total}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <LeaderboardDrawer
+            open={leaderboardOpen}
+            onToggle={() => setLeaderboardOpen(!leaderboardOpen)}
+            rows={state.leaderboard}
+            highlightPlayerId={playerId ?? undefined}
+          />
+        )}
 
         <div className="helper">Session: {state.session.title}</div>
         <button className="button ghost" onClick={handleLeave}>

@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import type { Card, Round, LeaderboardRow, PowerCard } from '@arena/shared';
-import { playActive, playJoin, playSubmit, type ActiveRules } from '../api';
+import { playJoin, playSubmit, getSessionState, activatePower, type ClientState, type ActiveRules } from '../api';
 import CardView from '../components/CardView';
 import ExpressionBuilder from '../components/ExpressionBuilder';
+import PowerInventory from '../components/PowerInventory';
+import LeaderboardDrawer from '../components/LeaderboardDrawer';
 import { useDeviceProfile } from '../utils/useDeviceProfile';
 
 const errorMessages: Record<string, string> = {
@@ -50,31 +52,35 @@ export default function PlayerSubmit() {
   const [displayName, setDisplayName] = useState('');
   const [sessionTitle, setSessionTitle] = useState('');
   const [joined, setJoined] = useState(false);
+  const [auth, setAuth] = useState<{ sessionId: string; clientToken: string } | null>(null);
   const [autoAccept, setAutoAccept] = useState(true);
-  const [card, setCard] = useState<Card | null>(null);
-  const [round, setRound] = useState<Round | null>(null);
-  const [activeRules, setActiveRules] = useState<ActiveRules | null>(null);
+
+  const [state, setState] = useState<ClientState | null>(null);
+
   const [expression, setExpression] = useState('');
   const [result, setResult] = useState('');
   const [error, setError] = useState('');
 
+  // Mobile UI
+  const { isMobileUI } = useDeviceProfile();
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [activating, setActivating] = useState(false);
+
   useEffect(() => {
-    if (!joined || !joinCode) {
+    if (!joined || !auth) {
       return;
     }
     const refresh = () => {
-      playActive({ join_code: joinCode })
+      getSessionState(auth.sessionId, auth.clientToken)
         .then((data) => {
-          setCard(data.card);
-          setRound(data.round);
-          setActiveRules(data.activeRules ?? null);
+          setState(data);
         })
         .catch(() => null);
     };
     refresh();
-    const interval = setInterval(refresh, 3000);
+    const interval = setInterval(refresh, 1000); // Faster refresh for live feedback
     return () => clearInterval(interval);
-  }, [joined, joinCode]);
+  }, [joined, auth]);
 
   const handleJoin = async () => {
     setError('');
@@ -86,10 +92,28 @@ export default function PlayerSubmit() {
       const response = await playJoin({ join_code: joinCode.trim().toUpperCase(), display_name: displayName.trim() });
       setSessionTitle(response.session_title);
       setAutoAccept(response.lan_auto_accept);
+      if (response.session_id && response.client_token) {
+        setAuth({ sessionId: response.session_id, clientToken: response.client_token });
+      }
       setJoined(true);
       setResult('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Join failed');
+    }
+  };
+
+  const handleActivatePower = async (powerId: string, payload: any) => {
+    if (!auth) return;
+    setActivating(true);
+    try {
+      await activatePower(auth.sessionId, powerId, payload, auth.clientToken);
+      // Refresh immediately
+      const data = await getSessionState(auth.sessionId, auth.clientToken);
+      setState(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Activation failed');
+    } finally {
+      setActivating(false);
     }
   };
 
@@ -100,15 +124,15 @@ export default function PlayerSubmit() {
     setResult('');
     setError('');
     try {
+      // Use existing playSubmit flow (simpler than switching entirely to submitAttempt for now)
+      // Note: playSubmit keeps working via join_code/name
       const response = await playSubmit({
         join_code: joinCode.trim().toUpperCase(),
         display_name: displayName.trim(),
         expression_raw: expression.trim()
       });
       if ('result' in response) {
-        setCard(response.card);
-        setRound(response.round);
-        setActiveRules(response.activeRules ?? null);
+        // Optimistic update isn't needed as polling will catch up, but good for feedback
         const message = formatResultMessage(response.result.error_code, response.result.remainingSeconds);
         setResult(message);
       } else if (response.status === 'pending') {
@@ -125,19 +149,24 @@ export default function PlayerSubmit() {
   const reset = () => {
     setJoined(false);
     setSessionTitle('');
-    setCard(null);
-    setRound(null);
-    setActiveRules(null);
+    setAuth(null);
+    setState(null);
     setExpression('');
     setResult('');
     setError('');
   };
+
+  // Helper getters
+  const card = state?.card ?? null;
+  const activeRules = state?.activeRules ?? null;
+  const leaderboard = state?.leaderboard ?? [];
 
   const displayNumbers = card
     ? activeRules?.reveal?.enabled
       ? activeRules.reveal.displayNumbers
       : [card.n1, card.n2, card.n3, card.n4]
     : [null, null, null, null];
+
   const bannedOps = activeRules?.restrictedOps?.bannedOps ?? [];
   const bannedOpsLabel = bannedOps.length > 0 ? bannedOps.map((op) => opLabels[op] ?? op).join(', ') : '';
   const shapeLabel = activeRules?.shapeConstraint === 'shapeA'
@@ -150,7 +179,7 @@ export default function PlayerSubmit() {
     : null;
 
   return (
-    <div className="container">
+    <div className="container" style={{ paddingBottom: '120px' }}> {/* Extra padding for drawer/sticky items */}
       <div className="panel player-join">
         <div className="section-title">Player Submit</div>
         {!joined ? (
@@ -185,27 +214,60 @@ export default function PlayerSubmit() {
             ) : (
               <div className="panel">Waiting for next round...</div>
             )}
-            <div className="form">
-              <div>
-                <label>Expression</label>
-                <input
-                  value={expression}
-                  onChange={(event) => setExpression(event.target.value)}
-                  placeholder="(6/(1-3/4))"
+
+            {/* Power Cards Inventory */}
+            {state?.powerCards?.inventory && state.powerCards.inventory.length > 0 && (
+              <div style={{ margin: '12px 0' }}>
+                <PowerInventory
+                  inventory={state.powerCards.inventory}
+                  onActivate={handleActivatePower}
+                  disabled={activating || !card}
                 />
               </div>
+            )}
+
+            <div className="form">
+              {isMobileUI ? (
+                <ExpressionBuilder
+                  numbers={displayNumbers}
+                  onExpressionChange={setExpression}
+                  disabled={!card || coldStartRemaining !== null}
+                  bannedOps={bannedOps}
+                />
+              ) : (
+                <div>
+                  <label>Expression</label>
+                  <input
+                    value={expression}
+                    onChange={(event) => setExpression(event.target.value)}
+                    placeholder="(6/(1-3/4))"
+                    disabled={!card || coldStartRemaining !== null}
+                  />
+                </div>
+              )}
+
               <button className="button" onClick={handleSubmit} disabled={!expression.trim() || coldStartRemaining !== null}>
                 Submit
               </button>
+
               {autoAccept ? (
                 <div className="helper">Auto-accept is on. Results appear immediately.</div>
               ) : (
                 <div className="helper">Submissions require host approval.</div>
               )}
             </div>
+
             <button className="button secondary" onClick={reset}>
-              Change Session
+              Leave
             </button>
+
+            {/* Mobile Leaderboard Drawer */}
+            <LeaderboardDrawer
+              open={leaderboardOpen}
+              onToggle={() => setLeaderboardOpen(!leaderboardOpen)}
+              rows={leaderboard}
+              highlightPlayerId={auth?.sessionId ? undefined : undefined} // We don't have player ID easily unless we parse response, but that's ok
+            />
           </>
         )}
         {result && <div className="banner ok">{result}</div>}

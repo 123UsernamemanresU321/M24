@@ -453,6 +453,7 @@ export function playJoin(input: { join_code: string; display_name?: string }) {
     join_code: string;
     lan_auto_accept: boolean;
     player: Player | null;
+    client_token: string;
   }>('/api/play/join', { method: 'POST', body: JSON.stringify(input) });
 }
 
