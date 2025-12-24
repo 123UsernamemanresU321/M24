@@ -11,6 +11,7 @@ export type ActiveRules = {
     displayNumbers: Array<number | null>;
     nextRevealSeconds?: number | null;
   } | null;
+  displayNumbers?: Array<number | null>;
   frozen?: boolean;
   swapped?: boolean;
 };

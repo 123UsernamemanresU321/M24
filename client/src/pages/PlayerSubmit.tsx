@@ -181,11 +181,11 @@ export default function PlayerSubmit() {
   const activeRules = state?.activeRules ?? null;
   const leaderboard = state?.leaderboard ?? [];
 
-  const displayNumbers = card
+  const displayNumbers = state?.activeRules?.displayNumbers || (card
     ? activeRules?.reveal?.enabled
       ? activeRules.reveal.displayNumbers
       : [card.n1, card.n2, card.n3, card.n4]
-    : [null, null, null, null];
+    : [null, null, null, null]);
 
   const bannedOps = activeRules?.restrictedOps?.bannedOps ?? [];
   const bannedOpsLabel = bannedOps.length > 0 ? bannedOps.map((op) => opLabels[op] ?? op).join(', ') : '';

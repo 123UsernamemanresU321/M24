@@ -715,6 +715,7 @@ async function start() {
   type RestrictedOp = 'add' | 'sub' | 'mul' | 'div';
   type RoundMetadata = {
     restrictedOps?: RestrictedOp[];
+    restrictedOpsWithActivator?: Array<{ op: RestrictedOp; activatorId: string }>;
     revealStartAt?: string;
     revealScheduleSeconds?: number[];
     prank?: boolean;
@@ -780,6 +781,9 @@ async function start() {
         displayNumbers: Array<number | null>;
         nextRevealSeconds?: number | null;
       } | null;
+      displayNumbers?: Array<number | null>;
+      frozen?: boolean;
+      swapped?: boolean;
     };
   };
 
@@ -1140,14 +1144,17 @@ async function start() {
     }
   };
 
-  const buildActiveRoundResponse = (sessionId: string, ownerPlayerId: string | null = null): ActiveRoundResponse | null => {
+  const buildActiveRoundResponse = (sessionId: string, contextPlayerId: string | null = null): ActiveRoundResponse | null => {
     const session = statements.getSession.get(sessionId) as Session | undefined;
     if (!session) {
       return null;
     }
     const rules = parseRules(session.rules_json);
     const multiplayer = getMultiplayerConfig(rules);
-    const active = ensureActiveRoundForPlayer(session, rules, multiplayer.cardDistribution === 'perPlayer' ? ownerPlayerId : null);
+
+    // For round fetching: only use ownership if distribution is perPlayer
+    const roundOwnerId = multiplayer.cardDistribution === 'perPlayer' ? contextPlayerId : null;
+    const active = ensureActiveRoundForPlayer(session, rules, roundOwnerId);
     if (!active) {
       return null;
     }
@@ -1169,7 +1176,17 @@ async function start() {
     const leaderboard = statements.leaderboard.all(sessionId) as LeaderboardRow[];
     const skipInfo = getSkipInfo(sessionId, rules);
     const timer = computeTimerState(round.created_at, rules.timer_mode ?? 'off', rules.countdown_seconds);
-    const restrictedOps = metadata.restrictedOps ?? [];
+    const restrictedFromMetadata = metadata.restrictedOps ?? [];
+    const restrictedWithActivators = metadata.restrictedOpsWithActivator ?? [];
+
+    // Filter restricted ops to exclude those activated by this player
+    const restrictedOps = [
+      ...restrictedFromMetadata,
+      ...restrictedWithActivators
+        .filter(entry => entry.activatorId !== contextPlayerId)
+        .map(entry => entry.op)
+    ];
+
     const allowedOps = buildAllowedOps(rules, restrictedOps);
     const coldStartRemaining = rules.coldStartSeconds
       ? computeColdStartRemaining(round.created_at, rules.coldStartSeconds)
@@ -1286,8 +1303,8 @@ async function start() {
     // POWER CARDS: Apply visual Swap for the player
     let displayNumbers: (number | null)[] = revealState?.displayNumbers ?? [card.n1, card.n2, card.n3, card.n4];
     let isSwapped = false;
-    if (ownerPlayerId && rules.powerCards?.enabled) {
-      const swapIndices = getActiveSwapIndices(powerStmts, session.id, ownerPlayerId);
+    if (contextPlayerId && rules.powerCards?.enabled) {
+      const swapIndices = getActiveSwapIndices(powerStmts, session.id, contextPlayerId);
       if (swapIndices) {
         const n1 = displayNumbers[swapIndices[0]];
         const n2 = displayNumbers[swapIndices[1]];
@@ -1322,14 +1339,15 @@ async function start() {
         shapeConstraint: rules.shapeConstraint ?? null,
         coldStartRemaining: rules.coldStartSeconds ? coldStartRemaining : null,
         reveal: revealState,
+        displayNumbers,
         frozen,
         swapped: isSwapped
       },
       powerCards: rules.powerCards?.enabled ? {
         enabled: true,
-        inventory: ownerPlayerId ? getPlayerInventory(powerStmts, session.id, ownerPlayerId) : [],
+        inventory: contextPlayerId ? getPlayerInventory(powerStmts, session.id, contextPlayerId) : [],
         activeEffects: {
-          lockedOps: metadata.restrictedOps,
+          lockedOps: restrictedOps as Array<'add' | 'sub' | 'mul' | 'div'>,
           frozenUntilRound: metadata.frozenUntilRound,
           playerEffects: (() => {
             // Calculate player effects from held powers
@@ -1527,7 +1545,7 @@ async function start() {
     }
     const rules = parseRules(session.rules_json);
     const multiplayer = getMultiplayerConfig(rules);
-    const active = buildActiveRoundResponse(sessionId, multiplayer.cardDistribution === 'perPlayer' ? playerId : null);
+    const active = buildActiveRoundResponse(sessionId, playerId);
     if (!active) {
       return null;
     }
@@ -1585,7 +1603,17 @@ async function start() {
     const { session, active, playerId, expressionRaw, source } = args;
     const rules = parseRules(session.rules_json);
     const metadata = parseRoundMetadata(active.round);
-    const restrictedOps = metadata.restrictedOps ?? [];
+    const restrictedFromMetadata = metadata.restrictedOps ?? [];
+    const restrictedWithActivators = metadata.restrictedOpsWithActivator ?? [];
+
+    // Filter restricted ops to exclude those activated by this player
+    const restrictedOps = [
+      ...restrictedFromMetadata,
+      ...restrictedWithActivators
+        .filter(entry => entry.activatorId !== playerId)
+        .map(entry => entry.op)
+    ];
+
     const allowedOps = buildAllowedOps(rules, restrictedOps);
     const cardNumbers = [active.card.n1, active.card.n2, active.card.n3, active.card.n4];
     const multiplayer = getMultiplayerConfig(rules);
@@ -2804,10 +2832,7 @@ async function start() {
       return;
     }
 
-    const active = buildActiveRoundResponse(
-      session.id,
-      multiplayer.cardDistribution === 'perPlayer' ? playerId : null
-    );
+    const active = buildActiveRoundResponse(session.id, playerId);
     if (!active) {
       reply.status(404).send({ error: 'No active round.' });
       return;
@@ -3018,10 +3043,7 @@ async function start() {
       }
       const rules = parseRules(session.rules_json);
       const multiplayer = getMultiplayerConfig(rules);
-      const active = buildActiveRoundResponse(
-        request.params.id,
-        multiplayer.cardDistribution === 'perPlayer' ? playerId : null
-      );
+      const active = buildActiveRoundResponse(request.params.id, playerId);
       if (!active) {
         reply.status(404).send({ error: 'No active round.' });
         return;
@@ -3122,13 +3144,16 @@ async function start() {
         },
         onLockedOpSet: (op: 'add' | 'sub' | 'mul' | 'div', _roundId: string) => {
           if (active?.round?.id) {
-            const metadata = JSON.parse(active.round.metadata_json || '{}');
-            const restricted = metadata.restrictedOps || [];
-            if (!restricted.includes(op)) {
-              restricted.push(op);
+            const metadata = JSON.parse(active.round.metadata_json || '{}') as RoundMetadata;
+            const restrictedWithActivator = metadata.restrictedOpsWithActivator || [];
+
+            // Avoid duplicates for this specific activator
+            const alreadyLocked = restrictedWithActivator.some(e => e.op === op && e.activatorId === playerId);
+            if (!alreadyLocked) {
+              restrictedWithActivator.push({ op, activatorId: playerId! });
+              metadata.restrictedOpsWithActivator = restrictedWithActivator;
+              statements.updateRoundMetadata.run(JSON.stringify(metadata), active.round.id);
             }
-            metadata.restrictedOps = restricted;
-            statements.updateRoundMetadata.run(JSON.stringify(metadata), active.round.id);
           }
         },
         onFreezeSet: (untilRound: number) => {

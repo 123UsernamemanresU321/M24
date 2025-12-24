@@ -196,11 +196,11 @@ export default function Play() {
     ? Math.max(0, state.activeRules.coldStartRemaining - elapsedSinceState)
     : null;
 
-  const displayNumbers = state?.card
+  const displayNumbers = state?.activeRules?.displayNumbers || (state?.card
     ? state.activeRules?.reveal?.enabled
       ? state.activeRules.reveal.displayNumbers
       : [state.card.n1, state.card.n2, state.card.n3, state.card.n4]
-    : [null, null, null, null];
+    : [null, null, null, null]);
 
   const bannedOps = state?.activeRules?.restrictedOps?.bannedOps ?? [];
   const bannedOpsLabel = bannedOps.length > 0 ? bannedOps.map((op) => opLabels[op] ?? op).join(', ') : '';
