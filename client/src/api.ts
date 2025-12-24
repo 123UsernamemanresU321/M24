@@ -255,6 +255,8 @@ export function createSession(input: {
   skip?: SessionRules['skip'];
   multiplayer?: SessionRules['multiplayer'];
   powerCards?: SessionRules['powerCards'];
+  mode?: SessionRules['mode'];
+  dealer?: SessionRules['dealer'];
 }) {
   return request<Session>('/api/sessions', { method: 'POST', body: JSON.stringify(input) });
 }
@@ -490,3 +492,34 @@ export function playSubmit(input: { join_code: string; display_name: string; exp
     }
   >('/api/play/submit', { method: 'POST', body: JSON.stringify(input) });
 }
+
+// ==================== DEALER MODE ====================
+
+export type DealerSettings = {
+  enabled: boolean;
+  difficultyMin?: 1 | 2 | 3 | 4;
+  difficultyMax?: 1 | 2 | 3 | 4;
+  avoidRepeatsWindow?: number;
+  requireDoubleSpace?: boolean;
+  minDwellMs?: number;
+  showCardIndex?: boolean;
+  showDifficultyDots?: boolean;
+};
+
+export type DealerRoundResponse = {
+  round: (Round & { shown_at?: string | null; index_in_session?: number | null }) | null;
+  card: Card | null;
+  settings: DealerSettings;
+};
+
+export function getDealerCurrent(id: string) {
+  return request<DealerRoundResponse>(`/api/sessions/${id}/dealer/current`);
+}
+
+export function dealerNext(id: string) {
+  return request<DealerRoundResponse>(`/api/sessions/${id}/dealer/next`, {
+    method: 'POST',
+    headers: hostHeaders()
+  });
+}
+

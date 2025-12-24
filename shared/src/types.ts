@@ -1,5 +1,17 @@
 export type SessionStatus = 'setup' | 'live' | 'finished';
 export type RoundStatus = 'active' | 'solved' | 'skipped';
+export type SessionMode = 'standard' | 'dealer';
+
+export type DealerSettings = {
+  enabled: boolean;
+  difficultyMin?: 1 | 2 | 3 | 4;
+  difficultyMax?: 1 | 2 | 3 | 4;
+  avoidRepeatsWindow?: number;
+  requireDoubleSpace?: boolean;
+  minDwellMs?: number;
+  showCardIndex?: boolean;
+  showDifficultyDots?: boolean;
+};
 
 export type PowerCardType = 'shield' | 'double' | 'swap' | 'reroll' | 'freeze' | 'steal' | 'lockOp';
 
@@ -111,6 +123,8 @@ export type SessionRules = {
     lockOpDurationRounds?: number;
     rerollAuthority?: 'hostOnly' | 'playerWithHostApprove';
   };
+  mode?: SessionMode;
+  dealer?: DealerSettings;
 };
 
 export type Session = {
@@ -156,6 +170,8 @@ export type Round = {
   hint1_revealed_at?: string | null;
   hint2_revealed_at?: string | null;
   metadata_json?: string | null;
+  shown_at?: string | null;
+  index_in_session?: number | null;
   created_at: string;
 };
 

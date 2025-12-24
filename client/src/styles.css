@@ -1548,3 +1548,143 @@ button:disabled,
     opacity: 1;
   }
 }
+
+/* ==================== DEALER MODE ==================== */
+
+.dealer-page {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(circle at center, #1a1a1a 0%, #0a0a0a 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  overflow: hidden;
+}
+
+.dealer-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dealer-index {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #1a1a1a;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.dealer-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 400px;
+  height: 400px;
+  border: 3px dashed rgba(255, 255, 255, 0.3);
+  border-radius: 20px;
+}
+
+.dealer-empty-text {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 24px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.dealer-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.dealer-overlay.hidden {
+  opacity: 0;
+}
+
+.dealer-overlay.visible {
+  opacity: 1;
+}
+
+.dealer-fullscreen-btn {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  border: none;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 24px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dealer-fullscreen-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.dealer-hints {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+  color: rgba(255, 255, 255, 0.85);
+  padding: 16px 24px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: center;
+  pointer-events: auto;
+  max-width: 90vw;
+}
+
+.dealer-hint-dismiss {
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.dealer-loading,
+.dealer-error {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.dealer-error {
+  color: #ff6b6b;
+}
+
+.dealer-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* Card in dealer mode should have white background for contrast */
+.dealer-card svg {
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}

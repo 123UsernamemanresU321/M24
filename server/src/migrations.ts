@@ -258,6 +258,14 @@ const migrations: Array<{ id: string; up: string }> = [
       );
       CREATE INDEX IF NOT EXISTS idx_pending_deltas_session ON pending_score_deltas(session_id);
     `
+  },
+  {
+    id: '016_add_dealer_round_fields',
+    up: `
+      ALTER TABLE rounds ADD COLUMN shown_at TEXT;
+      ALTER TABLE rounds ADD COLUMN index_in_session INTEGER;
+      CREATE INDEX IF NOT EXISTS idx_rounds_session_index ON rounds(session_id, index_in_session);
+    `
   }
 ];
 

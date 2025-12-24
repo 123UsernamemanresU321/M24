@@ -11,13 +11,15 @@ import Projector from './pages/Projector';
 import Join from './pages/Join';
 import Play from './pages/Play';
 import CardDebug from './pages/CardDebug';
+import DealerMode from './pages/DealerMode';
 
 export default function App() {
   const location = useLocation();
   const hideChrome =
     location.pathname.startsWith('/projector') ||
     location.pathname.startsWith('/play') ||
-    location.pathname.startsWith('/join');
+    location.pathname.startsWith('/join') ||
+    /\/sessions\/[^/]+\/dealer/.test(location.pathname);
   const clickTimes = useRef<number[]>([]);
   const prankArmKey = 'arena_prank_arm';
   const sessionMatch = location.pathname.match(/^\/sessions\/([^/]+)/);
@@ -96,6 +98,7 @@ export default function App() {
         <Route path="/join" element={<Join />} />
         <Route path="/play/:id" element={<Play />} />
         <Route path="/play" element={<Join />} />
+        <Route path="/sessions/:id/dealer" element={<DealerMode />} />
         <Route path="/card-debug" element={<CardDebug />} />
       </Routes>
     </div>

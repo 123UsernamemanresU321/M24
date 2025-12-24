@@ -134,6 +134,20 @@ function normalizeRules(input: SessionRules | null | undefined): SessionRules {
       }
     }
     : { ...(defaultRules.multiplayer ?? { enabled: false, cardDistribution: 'shared', claimEnabled: true, claimWindowSeconds: 10, wrongLockoutSeconds: 10, claimPenalty: { mode: 'leaderboardScaled', base: 0, max: 2 } }) };
+
+  // Normalize dealer mode settings
+  const mode = rules.mode === 'dealer' ? 'dealer' : 'standard';
+  const dealer = rules.dealer?.enabled ? {
+    enabled: true,
+    difficultyMin: normalizeTier(rules.dealer.difficultyMin ?? 1, 'dealerMin'),
+    difficultyMax: normalizeTier(rules.dealer.difficultyMax ?? 4, 'dealerMax'),
+    avoidRepeatsWindow: Math.max(0, rules.dealer.avoidRepeatsWindow ?? 50),
+    requireDoubleSpace: Boolean(rules.dealer.requireDoubleSpace),
+    minDwellMs: Math.max(0, rules.dealer.minDwellMs ?? 0),
+    showCardIndex: rules.dealer.showCardIndex ?? true,
+    showDifficultyDots: rules.dealer.showDifficultyDots ?? true
+  } : { enabled: false };
+
   if (!ops.add || !ops.sub || !ops.mul || !ops.div) {
     console.warn('Base operations must remain enabled; restoring + - * /.');
   }
@@ -163,7 +177,9 @@ function normalizeRules(input: SessionRules | null | undefined): SessionRules {
     uniquenessBonusPoints: rules.uniquenessBonusPoints ?? defaultRules.uniquenessBonusPoints,
     skip,
     multiplayer,
-    powerCards: normalizePowerCardsConfig(rules.powerCards)
+    powerCards: normalizePowerCardsConfig(rules.powerCards),
+    mode,
+    dealer
   };
 }
 
@@ -605,6 +621,30 @@ async function start() {
        JOIN cards c ON r.card_id = c.id
        WHERE r.session_id = ?
        ORDER BY r.created_at ASC`
+    ),
+    // Dealer mode statements
+    getDealerCurrentRound: db.prepare(
+      `SELECT r.*, c.n1, c.n2, c.n3, c.n4, c.dot_tier, c.difficulty_score, c.solution_count
+       FROM rounds r
+       JOIN cards c ON r.card_id = c.id
+       WHERE r.session_id = ?
+       ORDER BY COALESCE(r.index_in_session, 0) DESC, r.created_at DESC
+       LIMIT 1`
+    ),
+    getMaxRoundIndex: db.prepare(
+      `SELECT COALESCE(MAX(index_in_session), 0) as max_index
+       FROM rounds WHERE session_id = ?`
+    ),
+    updateRoundDealerFields: db.prepare(
+      `UPDATE rounds SET shown_at = ?, index_in_session = ? WHERE id = ?`
+    ),
+    getRecentDealerSignatures: db.prepare(
+      `SELECT c.n1, c.n2, c.n3, c.n4
+       FROM rounds r
+       JOIN cards c ON r.card_id = c.id
+       WHERE r.session_id = ?
+       ORDER BY COALESCE(r.index_in_session, 0) DESC
+       LIMIT ?`
     )
   };
 
@@ -2582,6 +2622,8 @@ async function start() {
       skip?: SessionRules['skip'];
       multiplayer?: SessionRules['multiplayer'];
       powerCards?: SessionRules['powerCards'];
+      mode?: SessionRules['mode'];
+      dealer?: SessionRules['dealer'];
     }
   }>(
     '/api/sessions',
@@ -2610,7 +2652,9 @@ async function start() {
         uniquenessBonusPoints,
         skip,
         multiplayer,
-        powerCards
+        powerCards,
+        mode,
+        dealer
       } = request.body;
       if (!title || title.trim() === '') {
         reply.status(400).send({ error: 'Title is required.' });
@@ -2643,7 +2687,9 @@ async function start() {
         uniquenessBonusPoints,
         skip,
         multiplayer,
-        powerCards
+        powerCards,
+        mode,
+        dealer
       });
       const join_code = generateJoinCode();
       const session = {
@@ -3000,6 +3046,247 @@ async function start() {
       timeout: active.timeout
     }));
   });
+
+  // ==================== DEALER MODE ENDPOINTS ====================
+
+  fastify.get<{ Params: { id: string } }>('/api/sessions/:id/dealer/current', async (request, reply) => {
+    const session = statements.getSession.get(request.params.id) as Session | undefined;
+    if (!session) {
+      reply.status(404).send({ error: 'Session not found.' });
+      return;
+    }
+    const rules = parseRules(session.rules_json);
+    if (rules.mode !== 'dealer') {
+      reply.status(400).send({ error: 'Session is not in dealer mode.' });
+      return;
+    }
+
+    const row = statements.getDealerCurrentRound.get(request.params.id) as {
+      id: string;
+      session_id: string;
+      card_id: string;
+      status: string;
+      solved_by_player_id: string | null;
+      solved_at: string | null;
+      shown_at: string | null;
+      index_in_session: number | null;
+      created_at: string;
+      n1: number;
+      n2: number;
+      n3: number;
+      n4: number;
+      dot_tier: number;
+      difficulty_score: number;
+      solution_count: number;
+    } | undefined;
+
+    if (!row) {
+      // No round yet - client should call dealer/next or we can auto-create first
+      reply.send({
+        round: null,
+        card: null,
+        settings: rules.dealer
+      });
+      return;
+    }
+
+    const card: Card = {
+      id: row.card_id,
+      n1: row.n1,
+      n2: row.n2,
+      n3: row.n3,
+      n4: row.n4,
+      target: 24,
+      difficulty_score: row.difficulty_score,
+      dot_tier: normalizeTier(row.dot_tier, 'dealerCurrent'),
+      solution_count: row.solution_count,
+      created_at: row.created_at
+    };
+
+    reply.send({
+      round: {
+        id: row.id,
+        session_id: row.session_id,
+        card_id: row.card_id,
+        status: row.status,
+        solved_by_player_id: row.solved_by_player_id,
+        solved_at: row.solved_at,
+        shown_at: row.shown_at,
+        index_in_session: row.index_in_session,
+        created_at: row.created_at
+      },
+      card,
+      settings: rules.dealer
+    });
+  });
+
+  fastify.post<{ Params: { id: string } }>('/api/sessions/:id/dealer/next', async (request, reply) => {
+    if (!hasHostToken(request)) {
+      reply.status(403).send({ error: 'Host token required.' });
+      return;
+    }
+
+    const session = statements.getSession.get(request.params.id) as Session | undefined;
+    if (!session) {
+      reply.status(404).send({ error: 'Session not found.' });
+      return;
+    }
+
+    const rules = parseRules(session.rules_json);
+    if (rules.mode !== 'dealer') {
+      reply.status(400).send({ error: 'Session is not in dealer mode.' });
+      return;
+    }
+
+    // Ensure session is live
+    if (session.status !== 'live') {
+      if (session.status === 'setup') {
+        statements.updateSessionStatus.run('live', session.id);
+      } else {
+        reply.status(400).send({ error: 'Session is finished.' });
+        return;
+      }
+    }
+
+
+    // Check minDwellMs enforcement
+    const dealer = rules.dealer;
+    if (dealer?.enabled && dealer.minDwellMs && dealer.minDwellMs > 0) {
+      const currentRow = statements.getDealerCurrentRound.get(request.params.id) as { shown_at: string | null } | undefined;
+      // If no current round, we can always proceed. If there is one, check dwell.
+      if (currentRow?.shown_at) {
+        const elapsed = Date.now() - new Date(currentRow.shown_at).getTime();
+        if (elapsed < dealer.minDwellMs) {
+          reply.status(429).send({
+            error: 'Min dwell time not met.',
+            remainingMs: dealer.minDwellMs - elapsed
+          });
+          return;
+        }
+      }
+    }
+
+    // Get recent signatures for avoid repeats
+    const avoidWindow = Math.max(0, dealer?.avoidRepeatsWindow ?? 50);
+    const recentRows = statements.getRecentDealerSignatures.all(request.params.id, avoidWindow) as Array<{
+      n1: number;
+      n2: number;
+      n3: number;
+      n4: number;
+    }>;
+    const recentSignatures = new Set(recentRows.map((r) => cardSignature([r.n1, r.n2, r.n3, r.n4])));
+
+    // Get max index
+    const maxIndexRow = statements.getMaxRoundIndex.get(request.params.id) as { max_index: number };
+    const nextIndex = (maxIndexRow?.max_index ?? 0) + 1;
+
+    // Generate a card respecting difficulty range
+    const difficultyMin = dealer?.difficultyMin ?? 1;
+    const difficultyMax = dealer?.difficultyMax ?? 4;
+    const validThresholds = { t1: 0.25, t2: 0.45, t3: 0.65 }; // Fallback defaults
+
+    let generated: ReturnType<typeof generateCard> | null = null;
+    const allowedTiers = [1, 2, 3, 4].filter(t => t >= difficultyMin && t <= difficultyMax) as Array<1 | 2 | 3 | 4>;
+
+    // Safeguard: ensure we have at least one allowed tier even if config is weird
+    const safeAllowedTiers = allowedTiers.length > 0 ? allowedTiers : [1, 2, 3, 4] as Array<1 | 2 | 3 | 4>;
+
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      // Pick a random tier from allowed range
+      const targetTier = safeAllowedTiers[Math.floor(rng() * safeAllowedTiers.length)];
+
+      try {
+        generated = generateCard({
+          rng,
+          difficultyMode: 'fixed',
+          fixedTier: targetTier,
+          recentSignatures,
+          cache: cardCache,
+          thresholds: typeof difficultyThresholds !== 'undefined' ? difficultyThresholds : validThresholds,
+          allowedOps: { add: true, sub: true, mul: true, div: true }
+        });
+
+        if (generated) {
+          break;
+        }
+      } catch (err) {
+        // Log generation error but continue trying
+        if (attempt === 0) request.log.error(err);
+      }
+    }
+
+    if (!generated) {
+      request.log.error('Failed to generate valid card after 200 attempts');
+      reply.status(500).send({ error: 'Unable to generate a valid card.' });
+      return;
+    }
+
+    const cardId = randomUUID();
+    const card: Card = {
+      id: cardId,
+      n1: generated.numbers[0],
+      n2: generated.numbers[1],
+      n3: generated.numbers[2],
+      n4: generated.numbers[3],
+      target: 24,
+      difficulty_score: generated.difficultyScore,
+      dot_tier: normalizeTier(generated.dotTier, 'dealerNext'),
+      solution_count: generated.solutionCount,
+      attempts_count: 0,
+      solves_count: 0,
+      avg_attempts_to_solve: null,
+      avg_time_to_solve: null,
+      tags_json: JSON.stringify(generated.tags ?? []),
+      hint_ops_json: JSON.stringify(generated.hint?.op ? [generated.hint.op] : []),
+      hint_intermediates_json: JSON.stringify(
+        generated.hint?.intermediate !== undefined ? [generated.hint.intermediate] : []
+      ),
+      created_at: nowIso()
+    };
+
+    statements.insertCard.run(card);
+
+    const shownAt = nowIso();
+    const roundId = randomUUID();
+    const round = {
+      id: roundId,
+      session_id: request.params.id,
+      card_id: cardId,
+      status: 'active',
+      solved_by_player_id: null,
+      solved_at: null,
+      metadata_json: JSON.stringify({ isImpossible: false, ownerPlayerId: null }),
+      created_at: shownAt
+    };
+    statements.insertRound.run(round);
+    statements.updateRoundDealerFields.run(shownAt, nextIndex, roundId);
+
+    // Broadcast to WebSocket clients
+    const clients = wsClients.get(request.params.id);
+    if (clients && clients.size > 0) {
+      const payload = {
+        type: 'dealer_round',
+        payload: {
+          round: { ...round, shown_at: shownAt, index_in_session: nextIndex },
+          card,
+          settings: rules.dealer
+        }
+      };
+      for (const client of clients) {
+        if (client.socket.readyState === client.socket.OPEN) {
+          client.socket.send(JSON.stringify(payload));
+        }
+      }
+    }
+
+    reply.send({
+      round: { ...round, shown_at: shownAt, index_in_session: nextIndex },
+      card,
+      settings: rules.dealer
+    });
+  });
+
+  // ==================== END DEALER MODE ENDPOINTS ====================
 
   fastify.post<{ Params: { id: string }; Body: { player_id?: string; expression_raw?: string; client_token?: string } }>(
     '/api/sessions/:id/submit',

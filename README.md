@@ -145,6 +145,42 @@ http://localhost:PORT/projector/<sessionId>
 
 It shows only the current card, tier, timer, and hints (if enabled).
 
+## Dealer Mode
+
+Dealer Mode is a "physical-style" play mode designed for projectors and live events. The app displays only the card graphics—no typing, no submissions, no leaderboard UI. Scoring is done outside the app.
+
+### Setting Up Dealer Mode
+
+1. Go to Session Setup and select **Dealer Mode** under Session Mode.
+2. Configure the optional settings:
+   - **Difficulty Range**: Filter cards by tier (1-4).
+   - **Avoid Repeats Window**: Prevent cards from repeating within the last N rounds.
+   - **Show Card Index**: Display a small "#N" badge in the corner.
+   - **Show Difficulty Dots**: Toggle tier dot indicators.
+   - **Require Double-SPACE**: Require two quick presses to advance (skip-protection).
+   - **Min Dwell Time**: Minimum milliseconds before allowing next card.
+3. Click **Start Session** to open the dealer page.
+
+### Dealer Mode Hotkeys
+
+| Key | Action |
+|-----|--------|
+| SPACE | Advance to next card |
+| F | Toggle fullscreen |
+| R | Re-render current card |
+| Esc | Exit fullscreen |
+
+### Multi-Device Sync
+
+If you open the dealer page on multiple devices, all clients will stay synchronized via WebSocket. When the host advances the card, all connected viewers update automatically.
+
+### Projector Tips
+
+- Use fullscreen mode (F key) for maximum visibility.
+- The dark background provides high contrast for projection.
+- Card occupies ~85% of the viewport, maintaining aspect ratio.
+- Works well in both 16:9 and 4:3 aspect ratios.
+
 ## Timer Expiry (Countdown)
 
 When the countdown reaches 0, the host + projector show a sample solution for 10 seconds, then the card auto-skips (no points awarded). Submissions are blocked during the timeout window.
