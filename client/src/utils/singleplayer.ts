@@ -17,6 +17,7 @@ export type SingleplayerCard = {
   tags: string[];
   attempts: number;
   startedAt: string;
+  revealed: boolean;
 };
 
 export type SingleplayerHistoryEntry = {
@@ -108,6 +109,7 @@ export function normalizeSingleplayerState(input?: Partial<SingleplayerState> | 
     ? {
         ...input.currentCard,
         attempts: Math.max(0, Math.floor(input.currentCard.attempts ?? 0)),
+        revealed: !!input.currentCard.revealed,
         numbers: [
           Number(input.currentCard.numbers?.[0] ?? 1),
           Number(input.currentCard.numbers?.[1] ?? 1),
@@ -228,7 +230,8 @@ export function generateSingleplayerCard(
       hint: solved.hint,
       tags: solved.tags,
       attempts: 0,
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
+      revealed: false
     };
   }
 

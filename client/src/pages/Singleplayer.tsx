@@ -93,7 +93,8 @@ export default function Singleplayer() {
           ? {
               numbers: currentCard.numbers,
               tier: currentCard.dotTier,
-              attempts: currentCard.attempts
+              attempts: currentCard.attempts,
+              revealed: currentCard.revealed
             }
           : null,
         score: state.stats.score,
@@ -141,6 +142,10 @@ export default function Singleplayer() {
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     if (!currentCard) {
+      return;
+    }
+    if (currentCard.revealed) {
+      setBanner({ tone: 'warning', text: 'This card was already revealed, so it can no longer award points.' });
       return;
     }
     const result = verifyExpression(expression, currentCard.numbers);
@@ -201,6 +206,10 @@ export default function Singleplayer() {
     if (!currentCard) {
       return;
     }
+    applyState((prev) => ({
+      ...prev,
+      currentCard: prev.currentCard ? { ...prev.currentCard, revealed: true } : prev.currentCard
+    }));
     setRevealedSolution(currentCard.solutionExpression);
     setBanner({ tone: 'warning', text: 'Solution revealed. No points awarded for this card.' });
   };
@@ -334,14 +343,24 @@ export default function Singleplayer() {
                     onChange={(event) => setExpression(event.target.value)}
                     placeholder="(8 / (3 - 8 / 3))"
                     autoComplete="off"
+                    disabled={!currentCard || currentCard.revealed}
                   />
                   <div className="helper">Use exactly the four numbers on the card, each once.</div>
                 </div>
                 <div className="button-row">
-                  <button className="button" type="submit" disabled={!currentCard || expression.trim().length === 0}>
+                  <button
+                    className="button"
+                    type="submit"
+                    disabled={!currentCard || currentCard.revealed || expression.trim().length === 0}
+                  >
                     Check Answer
                   </button>
-                  <button className="button secondary" type="button" onClick={handleReveal} disabled={!currentCard}>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={handleReveal}
+                    disabled={!currentCard || currentCard.revealed}
+                  >
                     Reveal Solution
                   </button>
                 </div>
@@ -357,6 +376,7 @@ export default function Singleplayer() {
                   <div className="recent-meta">
                     Attempts on this card: {currentCard.attempts}
                   </div>
+                  {currentCard.revealed && <div className="recent-meta">Status: revealed and locked for scoring</div>}
                 </div>
               )}
 
