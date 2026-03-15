@@ -280,6 +280,54 @@ a {
   justify-content: center;
 }
 
+.singleplayer-grid {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  align-items: start;
+}
+
+.singleplayer-stage {
+  grid-column: span 8;
+  display: grid;
+  gap: 20px;
+}
+
+.singleplayer-sidebar {
+  grid-column: span 4;
+  display: grid;
+  gap: 16px;
+}
+
+.singleplayer-history {
+  grid-column: 1 / -1;
+}
+
+.singleplayer-stage-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.singleplayer-controls {
+  display: grid;
+  gap: 16px;
+}
+
+.singleplayer-meta {
+  display: grid;
+  gap: 8px;
+}
+
+.singleplayer-solution {
+  display: inline-block;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid var(--card-border);
+  font-size: 14px;
+  word-break: break-word;
+}
+
 .session-actions {
   display: flex;
   gap: 8px;
@@ -1019,6 +1067,20 @@ button:disabled,
   .home-sessions,
   .home-exports {
     grid-column: span 6;
+  }
+
+  .singleplayer-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .singleplayer-stage,
+  .singleplayer-sidebar,
+  .singleplayer-history {
+    grid-column: span 6;
+  }
+
+  .singleplayer-stage-grid {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
-import { NavLink, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import { setPrankMode } from './api';
+import { STATIC_PREVIEW } from './env';
 import Home from './pages/Home';
 import Players from './pages/Players';
 import SessionSetup from './pages/SessionSetup';
@@ -12,9 +13,36 @@ import Join from './pages/Join';
 import Play from './pages/Play';
 import CardDebug from './pages/CardDebug';
 import DealerMode from './pages/DealerMode';
+import StaticPreview from './pages/StaticPreview';
+import Singleplayer from './pages/Singleplayer';
 
 export default function App() {
   const location = useLocation();
+  if (STATIC_PREVIEW) {
+    return (
+      <div className="app">
+        <header className="header">
+          <div className="brand">
+            24 <span>Arena</span>
+          </div>
+          <nav className="nav">
+            <NavLink to="/" end>
+              Home
+            </NavLink>
+            <NavLink to="/singleplayer">Singleplayer</NavLink>
+            <NavLink to="/card-debug">Card Debug</NavLink>
+          </nav>
+        </header>
+        <Routes>
+          <Route path="/" element={<StaticPreview />} />
+          <Route path="/singleplayer" element={<Singleplayer />} />
+          <Route path="/card-debug" element={<CardDebug />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </div>
+    );
+  }
+
   const hideChrome =
     location.pathname.startsWith('/projector') ||
     location.pathname.startsWith('/play') ||

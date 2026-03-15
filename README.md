@@ -86,6 +86,39 @@ Created structure:
 
 No cloud services, telemetry, or external APIs are used. Once dependencies are installed, the app runs fully offline.
 
+## GitHub Pages Preview via GitHub Actions
+
+GitHub Pages cannot host the full 24 Arena product because the real app requires:
+
+- the Fastify backend
+- SQLite in a user-chosen local data folder
+- local file access for exports/backups
+- WebSockets for projector sync, LAN multiplayer, and dealer mode
+
+What this repo now supports instead is a **GitHub Pages singleplayer deployment**:
+
+- A GitHub Actions workflow builds the React client in static singleplayer mode.
+- Preview mode switches routing to hash routing so GitHub Pages works reliably.
+- The published Pages site includes a real browser-only singleplayer mode plus the card renderer/debug view.
+- Local mode remains the full multiplayer / projector / SQLite app.
+
+Workflow file:
+
+```text
+.github/workflows/pages.yml
+```
+
+How to use it:
+
+1. Push the repo to GitHub.
+2. In GitHub, enable **Pages** and set **Build and deployment** to **GitHub Actions**.
+3. Push to `main` or `master`, or run the workflow manually from the Actions tab.
+
+Important:
+
+- GitHub Pages mode is usable for **singleplayer only**.
+- Multiplayer, projector sync, exports, LAN mode, and the full host console still require running the local app.
+
 ## Players Import Formats
 
 CSV:
